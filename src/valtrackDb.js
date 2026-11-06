@@ -25,52 +25,62 @@ function throwIfError(error) {
 
 async function fetchAll(table, columns = "*") {
   ensureConfigured();
-
   console.log(`[ValTrack] Chargement de ${table}...`);
 
   const out = [];
   let from = 0;
 
   while (true) {
-    console.log(`[ValTrack] ${table} : lignes ${from} à ${from + PAGE_SIZE - 1}`);
-
     let query = supabase.from(table).select(columns);
-
     for (const key of ORDER_KEYS[table] || []) {
       query = query.order(key, { ascending: true });
     }
 
-    const { data, error } = await query.range(
-      from,
-      from + PAGE_SIZE - 1
-    );
+    const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
 
     if (error) {
       console.error(`[ValTrack] ERREUR sur ${table}:`, error);
-
-      throw new Error(
-        `Erreur pendant le chargement de "${table}" : ${error.message}`
-      );
+      throw new Error(`Erreur pendant le chargement de "${table}" : ${error.message}`);
     }
 
     const rows = data || [];
-
-    console.log(
-      `[ValTrack] ${table} : ${rows.length} lignes reçues`
-    );
-
     out.push(...rows);
 
     if (rows.length < PAGE_SIZE) break;
-
     from += PAGE_SIZE;
   }
 
-  console.log(
-    `[ValTrack] ${table} terminé : ${out.length} lignes`
-  );
-
+  console.log(`[ValTrack] ${table} terminé : ${out.length} lignes`);
   return out;
+}
+
+async function fetchTeamLogosSafely() {
+  ensureConfigured();
+  console.log("[ValTrack] Chargement sécurisé des logos...");
+
+  // On récupère d'abord uniquement les petites clés texte.
+  const keys = await fetchAll("team_logos", "team_key");
+  const logos = [];
+
+  // Les Data URLs peuvent être très volumineuses. On les charge donc
+  // une par une pour éviter une requête PostgreSQL trop lourde.
+  for (const row of keys) {
+    const { data, error } = await supabase
+      .from("team_logos")
+      .select("team_key,data_url")
+      .eq("team_key", row.team_key)
+      .maybeSingle();
+
+    if (error) {
+      console.warn(`[ValTrack] Logo ignoré (${row.team_key}) :`, error.message);
+      continue;
+    }
+
+    if (data) logos.push(data);
+  }
+
+  console.log(`[ValTrack] Logos terminés : ${logos.length}/${keys.length}`);
+  return logos;
 }
 
 const playerToRow = (p) => ({
@@ -127,14 +137,17 @@ const statRowsForMatch = (match) =>
 export async function loadValtrackData() {
   ensureConfigured();
 
-const playerRows = await fetchAll("players");
-const tournamentRows = await fetchAll("tournaments");
-const teamRows = await fetchAll("tournament_teams");
-const matchRows = await fetchAll("matches");
-const statRows = await fetchAll("match_player_stats");
-const logoRows = await fetchAll("team_logos");
-const hiddenRows = await fetchAll("hidden_teams");
+  // Chargement séquentiel : évite de lancer plusieurs grosses requêtes
+  // Supabase/PostgreSQL en parallèle au démarrage.
+  const playerRows = await fetchAll("players");
+  const tournamentRows = await fetchAll("tournaments");
+  const teamRows = await fetchAll("tournament_teams");
+  const matchRows = await fetchAll("matches");
+  const statRows = await fetchAll("match_player_stats");
+  const hiddenRows = await fetchAll("hidden_teams");
 
+  // Les logos ne sont plus chargés ici : ils sont récupérés en arrière-plan
+  // après l'affichage de l'application pour ne pas bloquer le démarrage.
   const players = playerRows.map((r) => ({
     id: r.id,
     name: r.name || "",
@@ -164,8 +177,10 @@ const hiddenRows = await fetchAll("hidden_teams");
 
   const matchesByTournament = new Map();
   const orderedMatchRows = [...matchRows].sort((a, b) =>
-    String(a.created_at || "").localeCompare(String(b.created_at || "")) || String(a.id).localeCompare(String(b.id))
+    String(a.created_at || "").localeCompare(String(b.created_at || "")) ||
+    String(a.id).localeCompare(String(b.id))
   );
+
   for (const row of orderedMatchRows) {
     if (!matchesByTournament.has(row.tournament_id)) matchesByTournament.set(row.tournament_id, []);
     matchesByTournament.get(row.tournament_id).push({
@@ -192,13 +207,16 @@ const hiddenRows = await fetchAll("hidden_teams");
     finished: Boolean(r.finished),
   }));
 
-  const teamLogos = Object.fromEntries(
-    logoRows.map((r) => [r.team_key, r.data_url])
-  );
-
   const hiddenTeams = hiddenRows.map((r) => r.team_key);
 
-  return { players, tournaments, teamLogos, hiddenTeams };
+  return { players, tournaments, teamLogos: {}, hiddenTeams };
+}
+
+export async function loadTeamLogosDb() {
+  const logoRows = await fetchTeamLogosSafely();
+  return Object.fromEntries(
+    logoRows.map((r) => [r.team_key, r.data_url])
+  );
 }
 
 export async function upsertPlayerDb(player) {

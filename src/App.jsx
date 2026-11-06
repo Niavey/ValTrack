@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useDeferredValue } from "react";
 import {
   Search, Plus, Upload, X, ChevronLeft, Crosshair,
   Trash2, ArrowUp, ArrowDown, Swords, Loader2, Pencil, UserCog, ListPlus,
@@ -11,7 +11,7 @@ import { isSupabaseConfigured } from "./supabaseClient";
 import {
   loadValtrackData, upsertPlayerDb, upsertPlayersDb, deletePlayerDb,
   upsertTournamentDb, upsertTeamDb, upsertMatchDb, setMatchAppliedDb,
-  setTeamLogoDb, setHiddenTeamDb, migrateLegacySnapshotDb, readLegacyWindowStorage,
+  setTeamLogoDb, setHiddenTeamDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
 } from "./valtrackDb";
 
 const STORAGE_KEY = "vt_players_v2";
@@ -67,12 +67,12 @@ const COUNTRIES = [
   ["FR", "France"], ["BE", "Belgique"], ["CH", "Suisse"], ["GB", "Royaume-Uni"],
   ["DE", "Allemagne"], ["ES", "Espagne"], ["IT", "Italie"], ["PT", "Portugal"],
   ["NL", "Pays-Bas"], ["SE", "Suède"], ["DK", "Danemark"], ["NO", "Norvège"],
-  ["FI", "Finlande"], ["PL", "Pologne"], ["TR", "Turquie"], ["RU", "Russie"], ["KZ", "Kazakhstan"],
-  ["UA", "Ukraine"], ["AT", "Autriche"], ["CZ", "République tchèque"],
+  ["FI", "Finlande"], ["PL", "Pologne"], ["TR", "Turquie"], ["RU", "Russie"],
+  ["KZ", "Kazakhstan"], ["UA", "Ukraine"], ["AT", "Autriche"], ["CZ", "République tchèque"],
   ["SK", "Slovaquie"], ["HU", "Hongrie"], ["RO", "Roumanie"], ["BG", "Bulgarie"],
   ["GR", "Grèce"], ["HR", "Croatie"], ["RS", "Serbie"], ["IS", "Islande"],
   ["IE", "Irlande"], ["US", "États-Unis"], ["CA", "Canada"], ["BR", "Brésil"],
-  ["AR", "Argentine"], ["CL", "Chili"], ["CO", "Colombie"], ["EC", "Equateur"], ["MX", "Mexique"], ["KR", "Corée du Sud"],
+  ["AR", "Argentine"], ["CL", "Chili"], ["MX", "Mexique"], ["KR", "Corée du Sud"],
   ["JP", "Japon"], ["CN", "Chine"], ["TW", "Taïwan"], ["HK", "Hong Kong"],
   ["SG", "Singapour"], ["TH", "Thaïlande"], ["PH", "Philippines"],
   ["ID", "Indonésie"], ["VN", "Vietnam"], ["IN", "Inde"], ["AU", "Australie"],
@@ -1035,8 +1035,8 @@ function TeamLogoUpload({ team, teamLogos, onSetLogo, size = "sm" }) {
   const handleChange = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !team) return;
-    const dataUrl = await fileToDataUrl(file);
-    onSetLogo(team, dataUrl);
+    onSetLogo(team, file);
+    e.target.value = "";
   };
   return (
     <>
@@ -1454,10 +1454,247 @@ function PlayerSortHeader({ sortKey, sortDir, onClick }) {
   );
 }
 
+
+// ---------- classement / records filters ----------
+const DEFAULT_DATA_FILTERS = {
+  minRounds: "",
+  types: { Split: true, Masters: true, Champions: true },
+  year: "all",
+  tournamentId: "all",
+  team: "all",
+};
+
+function tournamentYear(tournament) {
+  const raw = String(tournament?.date || "").trim();
+  const match = raw.match(/^(\d{4})/);
+  return match ? match[1] : "";
+}
+
+function namedTypeFilterIsDefault(filters) {
+  return ["Split", "Masters", "Champions"].every((type) => filters.types?.[type] !== false);
+}
+
+function hasScopedDataFilter(filters) {
+  return !namedTypeFilterIsDefault(filters)
+    || filters.year !== "all"
+    || filters.tournamentId !== "all"
+    || filters.team !== "all";
+}
+
+function tournamentPassesDataFilters(tournament, filters) {
+  if (!namedTypeFilterIsDefault(filters) && !filters.types?.[tournament.type]) return false;
+  if (filters.year !== "all" && tournamentYear(tournament) !== filters.year) return false;
+  if (filters.tournamentId !== "all" && tournament.id !== filters.tournamentId) return false;
+  return true;
+}
+
+function normalizedTeamName(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function teamIdsMatchingFilter(tournament, filters) {
+  if (filters.team === "all") return [];
+  const wanted = normalizedTeamName(filters.team);
+  return (tournament.teams || [])
+    .filter((team) => normalizedTeamName(team.name) === wanted)
+    .map((team) => team.id);
+}
+
+function filterTournamentScope(tournaments, filters, appliedOnly = false) {
+  return (tournaments || [])
+    .filter((t) => tournamentPassesDataFilters(t, filters))
+    .map((t) => {
+      const selectedTeamIds = teamIdsMatchingFilter(t, filters);
+      const matches = (t.matches || []).filter((m) => {
+        if (appliedOnly && !m.appliedToStats) return false;
+        if (filters.team !== "all" && !selectedTeamIds.includes(m.teamAId) && !selectedTeamIds.includes(m.teamBId)) return false;
+        return true;
+      });
+      return { ...t, matches };
+    })
+    .filter((t) => t.matches.length > 0);
+}
+
+function playerIdsForSelectedTeam(tournament, filters) {
+  if (filters.team === "all") return null;
+  const ids = new Set();
+  const wanted = normalizedTeamName(filters.team);
+  (tournament.teams || []).forEach((team) => {
+    if (normalizedTeamName(team.name) === wanted) {
+      (team.playerIds || []).forEach((id) => ids.add(id));
+    }
+  });
+  return ids;
+}
+
+function roundsByPlayerInScope(tournaments, filters) {
+  const totals = new Map();
+  (tournaments || []).forEach((t) => {
+    const teamPlayerIds = playerIdsForSelectedTeam(t, filters);
+    (t.matches || []).forEach((m) => {
+      const fallbackRounds = (m.mapScores || []).reduce((sum, score) => sum + num(score.a) + num(score.b), 0);
+      Object.entries(m.stats || {}).forEach(([playerId, vals]) => {
+        if (teamPlayerIds && !teamPlayerIds.has(playerId)) return;
+        const rounds = hasStatValue(vals?.round) ? num(vals.round) : fallbackRounds;
+        totals.set(playerId, (totals.get(playerId) || 0) + rounds);
+      });
+    });
+  });
+  return totals;
+}
+
+function eligiblePlayerIdsForFilters(tournaments, filters) {
+  const totals = roundsByPlayerInScope(tournaments, filters);
+  const minimum = Math.max(0, num(filters.minRounds));
+  return new Set([...totals.entries()].filter(([, rounds]) => rounds >= minimum).map(([playerId]) => playerId));
+}
+
+function trimTournamentStatsForFilters(tournaments, filters, eligibleIds = null) {
+  return (tournaments || []).map((t) => {
+    const teamPlayerIds = playerIdsForSelectedTeam(t, filters);
+    return {
+      ...t,
+      matches: (t.matches || []).map((m) => ({
+        ...m,
+        stats: Object.fromEntries(
+          Object.entries(m.stats || {}).filter(([playerId]) => {
+            if (teamPlayerIds && !teamPlayerIds.has(playerId)) return false;
+            if (eligibleIds && !eligibleIds.has(playerId)) return false;
+            return true;
+          })
+        ),
+      })),
+    };
+  });
+}
+
+function buildFilteredLeaderboardPlayers(players, tournaments, filters) {
+  const minimum = Math.max(0, num(filters.minRounds));
+
+  // With only a rounds threshold active, keep the existing global career totals exactly as stored.
+  if (!hasScopedDataFilter(filters)) {
+    return players.filter((p) => num(p.stats.round) >= minimum);
+  }
+
+  // Once a tournament/year/type/team filter is active, rebuild the ranking from the matching
+  // tournament matches so Rating/KAST/KD/etc. truly correspond to that selection.
+  const scopedFullMatches = filterTournamentScope(tournaments, filters, true);
+  const scopedRows = trimTournamentStatsForFilters(scopedFullMatches, filters);
+  const totals = new Map();
+
+  scopedRows.forEach((t) => {
+    (t.matches || []).forEach((m) => {
+      Object.entries(m.stats || {}).forEach(([playerId, row]) => {
+        const hasValue = Object.values(row || {}).some((v) => v !== "" && v !== undefined && v !== null);
+        if (!hasValue) return;
+        const previous = totals.get(playerId) || emptyStats();
+        totals.set(playerId, applyMatchToStats(previous, row));
+      });
+    });
+  });
+
+  // MVP/MJ remain calculated from the complete match, then are assigned only to players that
+  // survive the selected team/round filters.
+  const scopedMvpMj = computeMvpMjCounts(scopedFullMatches);
+
+  return players
+    .filter((p) => totals.has(p.id))
+    .map((p) => ({
+      ...p,
+      stats: {
+        ...totals.get(p.id),
+        mvp: scopedMvpMj[p.id]?.mvp || 0,
+        mj: scopedMvpMj[p.id]?.mj || 0,
+      },
+    }))
+    .filter((p) => num(p.stats.round) >= minimum);
+}
+
+function DataFiltersPanel({ filters, onChange, tournaments }) {
+  const years = useMemo(() => [...new Set((tournaments || []).map(tournamentYear).filter(Boolean))].sort((a, b) => b.localeCompare(a)), [tournaments]);
+  const tournamentOptions = useMemo(() => [...(tournaments || [])].sort((a, b) => {
+    const dateCmp = String(b.date || "").localeCompare(String(a.date || ""));
+    return dateCmp || a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
+  }), [tournaments]);
+  const teams = useMemo(() => {
+    const names = new Map();
+    (tournaments || []).forEach((t) => (t.teams || []).forEach((team) => {
+      const key = normalizedTeamName(team.name);
+      if (key && !names.has(key)) names.set(key, team.name);
+    }));
+    return [...names.values()].sort((a, b) => a.localeCompare(b, "fr", { sensitivity: "base" }));
+  }, [tournaments]);
+
+  const update = (patch) => onChange({ ...filters, ...patch });
+  const toggleType = (type) => update({ types: { ...filters.types, [type]: !filters.types?.[type] } });
+
+  return (
+    <div className="vt-panel vt-cut" style={{ padding: 14, marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+        <div className="vt-label">Filtres</div>
+        <button className="vt-btn vt-cut-sm" style={{ padding: "5px 9px", fontSize: 11 }} onClick={() => onChange({ ...DEFAULT_DATA_FILTERS, types: { ...DEFAULT_DATA_FILTERS.types } })}>
+          Réinitialiser
+        </button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, alignItems: "end" }}>
+        <Field label="Rounds minimum">
+          <input
+            type="number"
+            min="0"
+            step="1"
+            className="vt-input vt-mono"
+            style={{ width: "100%" }}
+            placeholder="0"
+            value={filters.minRounds}
+            onChange={(e) => update({ minRounds: e.target.value })}
+          />
+        </Field>
+
+        <Field label="Type de tournoi">
+          <div className="vt-panel vt-cut-sm" style={{ display: "flex", gap: 10, minHeight: 38, alignItems: "center", padding: "7px 10px", flexWrap: "wrap" }}>
+            {["Split", "Masters", "Champions"].map((type) => (
+              <label key={type} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>
+                <input type="checkbox" checked={filters.types?.[type] !== false} onChange={() => toggleType(type)} />
+                {type}
+              </label>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Année">
+          <select className="vt-select" style={{ width: "100%" }} value={filters.year} onChange={(e) => update({ year: e.target.value })}>
+            <option value="all">Toutes</option>
+            {years.map((year) => <option key={year} value={year}>{year}</option>)}
+          </select>
+        </Field>
+
+        <Field label="Tournoi précis">
+          <select className="vt-select" style={{ width: "100%" }} value={filters.tournamentId} onChange={(e) => update({ tournamentId: e.target.value })}>
+            <option value="all">Tous les tournois</option>
+            {tournamentOptions.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+
+        <Field label="Équipe">
+          <select className="vt-select" style={{ width: "100%" }} value={filters.team} onChange={(e) => update({ team: e.target.value })}>
+            <option value="all">Toutes les équipes</option>
+            {teams.map((team) => <option key={team} value={team}>{team}</option>)}
+          </select>
+        </Field>
+      </div>
+    </div>
+  );
+}
+
 // ---------- leaderboard ----------
 function Leaderboard({ players, onOpenPlayer, query, sortKey, sortDir, onSort, teamLogos }) {
+  const deferredQuery = useDeferredValue(query);
   const rows = useMemo(() => {
-    const filtered = players.filter((p) => p.name.toLowerCase().includes(query.toLowerCase()));
+    const normalizedQuery = deferredQuery.trim().toLowerCase();
+    const filtered = normalizedQuery
+      ? players.filter((p) => p.name.toLowerCase().includes(normalizedQuery))
+      : players;
     return [...filtered].sort((a, b) => {
       let compareAsc;
       if (sortKey === "name") {
@@ -1472,7 +1709,7 @@ function Leaderboard({ players, onOpenPlayer, query, sortKey, sortDir, onSort, t
       }
       return sortDir === "asc" ? compareAsc : -compareAsc;
     });
-  }, [players, sortKey, sortDir, query]);
+  }, [players, sortKey, sortDir, deferredQuery]);
 
   if (players.length === 0) {
     return (
@@ -1502,7 +1739,7 @@ function Leaderboard({ players, onOpenPlayer, query, sortKey, sortDir, onSort, t
             const medal = rank === 1 ? "vt-medal-1" : rank === 2 ? "vt-medal-2" : rank === 3 ? "vt-medal-3" : "";
             const logo = getLogo(teamLogos, currentTeam(player));
             return (
-              <tr key={player.id} className="vt-row" style={{ borderBottom: "1px solid var(--line)", cursor: "pointer" }} onClick={() => onOpenPlayer(player.id)}>
+              <tr key={player.id} className="vt-row" style={{ borderBottom: "1px solid var(--line)", cursor: "pointer", contentVisibility: "auto", containIntrinsicSize: "48px" }} onClick={() => onOpenPlayer(player.id)}>
                 <td className={"vt-display vt-mono " + medal} style={{ padding: "12px 14px", fontSize: 18, fontWeight: 700 }}>{rank}</td>
                 <td style={{ padding: "12px 14px", position: "relative", overflow: "hidden" }}>
                   {player.nationality && <span className="vt-flag-row"><CountryFlag code={player.nationality} style={{ width: 46, height: 32 }} /></span>}
@@ -2532,20 +2769,24 @@ function RankedCountList({ title, rows, countKey, unit }) {
   );
 }
 
-function RecordsView({ tournaments, players }) {
-  const { BO3, BO5 } = useMemo(() => collectMatchRecords(tournaments, players), [tournaments, players]);
-  const durations = useMemo(() => collectMatchDurationRecords(tournaments), [tournaments]);
-  const mvpMjCounts = useMemo(() => computeMvpMjCounts(tournaments), [tournaments]);
+function RecordsView({ tournaments, players, filters, onFiltersChange }) {
+  const scopedTournaments = useMemo(() => filterTournamentScope(tournaments, filters, false), [tournaments, filters]);
+  const eligibleIds = useMemo(() => eligiblePlayerIdsForFilters(scopedTournaments, filters), [scopedTournaments, filters]);
+  const recordTournaments = useMemo(() => trimTournamentStatsForFilters(scopedTournaments, filters, eligibleIds), [scopedTournaments, filters, eligibleIds]);
+  const { BO3, BO5 } = useMemo(() => collectMatchRecords(recordTournaments, players), [recordTournaments, players]);
+  const durations = useMemo(() => collectMatchDurationRecords(scopedTournaments), [scopedTournaments]);
+  const mvpMjCounts = useMemo(() => computeMvpMjCounts(scopedTournaments), [scopedTournaments]);
 
-  const topMvp = players.filter((p) => (mvpMjCounts[p.id]?.mvp || 0) > 0)
+  const topMvp = players.filter((p) => eligibleIds.has(p.id) && (mvpMjCounts[p.id]?.mvp || 0) > 0)
     .sort((a, b) => (mvpMjCounts[b.id]?.mvp || 0) - (mvpMjCounts[a.id]?.mvp || 0)).slice(0, 10)
     .map((p) => ({ id: p.id, name: p.name, mvp: mvpMjCounts[p.id]?.mvp || 0 }));
-  const topMj = players.filter((p) => (mvpMjCounts[p.id]?.mj || 0) > 0)
+  const topMj = players.filter((p) => eligibleIds.has(p.id) && (mvpMjCounts[p.id]?.mj || 0) > 0)
     .sort((a, b) => (mvpMjCounts[b.id]?.mj || 0) - (mvpMjCounts[a.id]?.mj || 0)).slice(0, 10)
     .map((p) => ({ id: p.id, name: p.name, mj: mvpMjCounts[p.id]?.mj || 0 }));
 
   return (
     <div>
+      <DataFiltersPanel filters={filters} onChange={onFiltersChange} tournaments={tournaments} />
       <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 20 }}>
         Meilleure et plus faible performance d'un joueur sur un seul match, tous tournois confondus.
         Le format (BO3/BO5) est déterminé par le nombre de maps gagnées par l'équipe qui l'emporte.
@@ -2804,6 +3045,7 @@ export default function App() {
   const [editingMatch, setEditingMatch] = useState(null);
   const [sortKey, setSortKey] = useState("rating");
   const [sortDir, setSortDir] = useState("desc");
+  const [dataFilters, setDataFilters] = useState(() => ({ ...DEFAULT_DATA_FILTERS, types: { ...DEFAULT_DATA_FILTERS.types } }));
   const scrollPositions = useRef({ leaderboard: 0, tournaments: 0 });
 
   // All writes are optimistic: the UI updates immediately, then Supabase is updated in the
@@ -2857,6 +3099,16 @@ export default function App() {
         setTeamLogos(data.teamLogos || {});
         setHiddenTeams(data.hiddenTeams || []);
         setSaveError("");
+
+        // Les logos sont chargés après les données essentielles. Ils peuvent donc apparaître
+        // progressivement sans empêcher le classement, la recherche ou les tris de fonctionner.
+        loadTeamLogosDb((teamKey, url) => {
+          if (!cancelled) {
+            setTeamLogos((prev) => ({ ...prev, [teamKey]: url }));
+          }
+        }).catch((logoError) => {
+          console.warn("[ValTrack] Chargement des logos en arrière-plan impossible :", logoError);
+        });
       } catch (error) {
         console.error("[ValTrack] Chargement Supabase impossible:", error);
         if (!cancelled) setSaveError(`Chargement impossible : ${error?.message || String(error)}`);
@@ -2901,10 +3153,21 @@ export default function App() {
     else { setSortKey(key); setSortDir("desc"); }
   };
 
-  const setLogo = (teamName, dataUrl) => {
+  const setLogo = (teamName, file) => {
     const key = teamName.trim().toLowerCase();
-    setTeamLogos((prev) => ({ ...prev, [key]: dataUrl }));
-    persist(setTeamLogoDb(key, dataUrl), "la sauvegarde du logo");
+    const previewUrl = file instanceof Blob ? URL.createObjectURL(file) : file;
+
+    setTeamLogos((prev) => ({ ...prev, [key]: previewUrl }));
+
+    persist(
+      setTeamLogoDb(key, file).then((publicUrl) => {
+        setTeamLogos((prev) => ({ ...prev, [key]: publicUrl }));
+        if (file instanceof Blob && previewUrl?.startsWith("blob:")) {
+          URL.revokeObjectURL(previewUrl);
+        }
+      }),
+      "la sauvegarde du logo"
+    );
   };
 
   const toggleHiddenTeam = (teamName) => {
@@ -3147,6 +3410,11 @@ export default function App() {
     stats: { ...p.stats, mvp: mvpMjCounts[p.id]?.mvp || 0, mj: mvpMjCounts[p.id]?.mj || 0 },
   })), [players, mvpMjCounts]);
 
+  const filteredLeaderboardPlayers = useMemo(
+    () => buildFilteredLeaderboardPlayers(displayPlayers, tournaments, dataFilters),
+    [displayPlayers, tournaments, dataFilters]
+  );
+
   const activePlayer = view.name === "player" ? displayPlayers.find((p) => p.id === view.id) : null;
   // the raw (non-overlaid) player — used for anything that can save, so the live MVP/MJ
   // snapshot never gets baked into real storage
@@ -3207,7 +3475,7 @@ export default function App() {
           </button>
         </div>
 
-        {view.name === "records" && <RecordsView tournaments={tournaments} players={players} />}
+        {view.name === "records" && <RecordsView tournaments={tournaments} players={players} filters={dataFilters} onFiltersChange={setDataFilters} />}
         {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} />}
 
         {view.name === "leaderboard" && (
@@ -3225,8 +3493,9 @@ export default function App() {
               <button className="vt-btn vt-cut-sm" onClick={() => setModal("import")}><Upload size={14} /> Importer</button>
               <button className="vt-btn vt-btn-primary vt-cut-sm" onClick={() => setModal("addPlayer")}><Plus size={14} /> Joueur</button>
             </div>
+            <DataFiltersPanel filters={dataFilters} onChange={setDataFilters} tournaments={tournaments} />
             <Leaderboard
-              players={displayPlayers}
+              players={filteredLeaderboardPlayers}
               query={query}
               onOpenPlayer={openPlayer}
               sortKey={sortKey}
