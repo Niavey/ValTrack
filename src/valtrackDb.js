@@ -1,6 +1,72 @@
 import { supabase, isSupabaseConfigured } from "./supabaseClient";
 
 const PAGE_SIZE = 250;
+
+const TEAM_LOGO_BUCKET = "team-logos";
+
+function safeLogoBaseName(teamKey) {
+  const cleaned = String(teamKey || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "team";
+}
+
+function extensionFromMime(mime) {
+  if (mime === "image/jpeg") return "jpg";
+  if (mime === "image/webp") return "webp";
+  if (mime === "image/gif") return "gif";
+  if (mime === "image/svg+xml") return "svg";
+  return "png";
+}
+
+function dataUrlToBlob(dataUrl) {
+  const match = String(dataUrl || "").match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+  if (!match) throw new Error("Format Data URL invalide.");
+
+  const mime = match[1] || "image/png";
+  const isBase64 = Boolean(match[2]);
+  const payload = match[3] || "";
+
+  if (isBase64) {
+    const binary = atob(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }
+
+  return new Blob([decodeURIComponent(payload)], { type: mime });
+}
+
+async function uploadLogoToStorage(teamKey, fileOrBlob) {
+  ensureConfigured();
+
+  const blob = fileOrBlob instanceof Blob ? fileOrBlob : dataUrlToBlob(fileOrBlob);
+  const ext = extensionFromMime(blob.type || "image/png");
+  const path = `${safeLogoBaseName(teamKey)}-${Date.now()}.${ext}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from(TEAM_LOGO_BUCKET)
+    .upload(path, blob, {
+      contentType: blob.type || "image/png",
+      cacheControl: "31536000",
+      upsert: false,
+    });
+
+  throwIfError(uploadError);
+
+  const { data } = supabase.storage
+    .from(TEAM_LOGO_BUCKET)
+    .getPublicUrl(path);
+
+  const publicUrl = data?.publicUrl;
+  if (!publicUrl) throw new Error("Impossible de générer l'URL publique du logo.");
+
+  return publicUrl;
+}
+
 const ORDER_KEYS = {
   players: ["id"],
   tournaments: ["id"],
@@ -54,34 +120,54 @@ async function fetchAll(table, columns = "*") {
   return out;
 }
 
-async function fetchTeamLogosSafely() {
+async function fetchTeamLogosSafely(onLogo) {
   ensureConfigured();
-  console.log("[ValTrack] Chargement sécurisé des logos...");
+  console.log("[ValTrack] Chargement / migration progressive des logos...");
 
-  // On récupère d'abord uniquement les petites clés texte.
+  // Cette requête ne récupère que les petites clés texte.
   const keys = await fetchAll("team_logos", "team_key");
-  const logos = [];
+  let loaded = 0;
 
-  // Les Data URLs peuvent être très volumineuses. On les charge donc
-  // une par une pour éviter une requête PostgreSQL trop lourde.
   for (const row of keys) {
-    const { data, error } = await supabase
-      .from("team_logos")
-      .select("team_key,data_url")
-      .eq("team_key", row.team_key)
-      .maybeSingle();
+    try {
+      const { data, error } = await supabase
+        .from("team_logos")
+        .select("team_key,data_url")
+        .eq("team_key", row.team_key)
+        .maybeSingle();
 
-    if (error) {
-      console.warn(`[ValTrack] Logo ignoré (${row.team_key}) :`, error.message);
-      continue;
+      throwIfError(error);
+      if (!data?.data_url) continue;
+
+      let url = data.data_url;
+
+      // Ancien format : grosse Data URL base64 stockée dans PostgreSQL.
+      // On la migre une seule fois vers Supabase Storage.
+      if (url.startsWith("data:")) {
+        console.log(`[ValTrack] Migration du logo ${row.team_key} vers Storage...`);
+        url = await uploadLogoToStorage(row.team_key, url);
+
+        const { error: updateError } = await supabase
+          .from("team_logos")
+          .update({
+            data_url: url,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("team_key", row.team_key);
+
+        throwIfError(updateError);
+      }
+
+      loaded += 1;
+      if (typeof onLogo === "function") onLogo(row.team_key, url);
+    } catch (error) {
+      console.warn(`[ValTrack] Logo ignoré (${row.team_key}) :`, error?.message || error);
     }
-
-    if (data) logos.push(data);
   }
 
-  console.log(`[ValTrack] Logos terminés : ${logos.length}/${keys.length}`);
-  return logos;
+  console.log(`[ValTrack] Logos terminés : ${loaded}/${keys.length}`);
 }
+
 
 const playerToRow = (p) => ({
   id: p.id,
@@ -212,12 +298,15 @@ export async function loadValtrackData() {
   return { players, tournaments, teamLogos: {}, hiddenTeams };
 }
 
-export async function loadTeamLogosDb() {
-  const logoRows = await fetchTeamLogosSafely();
-  return Object.fromEntries(
-    logoRows.map((r) => [r.team_key, r.data_url])
-  );
+export async function loadTeamLogosDb(onLogo) {
+  const logos = {};
+  await fetchTeamLogosSafely((teamKey, url) => {
+    logos[teamKey] = url;
+    if (typeof onLogo === "function") onLogo(teamKey, url);
+  });
+  return logos;
 }
+
 
 export async function upsertPlayerDb(player) {
   ensureConfigured();
@@ -288,16 +377,27 @@ export async function setMatchAppliedDb(matchId, applied) {
   throwIfError(error);
 }
 
-export async function setTeamLogoDb(teamKey, dataUrl) {
+export async function setTeamLogoDb(teamKey, fileOrDataUrl) {
   ensureConfigured();
+
+  // Les nouveaux logos sont stockés comme de vrais fichiers dans Supabase Storage.
+  const publicUrl = await uploadLogoToStorage(teamKey, fileOrDataUrl);
+
   const { error } = await supabase
     .from("team_logos")
     .upsert(
-      { team_key: teamKey, data_url: dataUrl, updated_at: new Date().toISOString() },
+      {
+        team_key: teamKey,
+        data_url: publicUrl,
+        updated_at: new Date().toISOString(),
+      },
       { onConflict: "team_key" }
     );
+
   throwIfError(error);
+  return publicUrl;
 }
+
 
 export async function setHiddenTeamDb(teamKey, hidden) {
   ensureConfigured();
