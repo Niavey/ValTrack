@@ -1,16 +1,43 @@
-# React + Vite
+# ValTrack
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Registre de performances Valorant : classement des joueurs, tournois, records BO3/BO5,
+MVP/MJ et classement Elo des équipes. React + Vite, données stockées dans Supabase.
 
-Currently, two official plugins are available:
+## Démarrer
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+cp .env.example .env   # puis remplis l'URL et la clé publique de ton projet Supabase
+npm run dev
+```
 
-## React Compiler
+## Scripts
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Commande | Rôle |
+|---|---|
+| `npm run dev` | serveur de développement |
+| `npm run build` | build de production dans `dist/` |
+| `npm run lint` | analyse du code (oxlint) |
+| `npm test` | tests des calculs (Vitest) |
 
-## Expanding the Oxlint configuration
+## Organisation du code
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+```
+src/
+  App.jsx             interface (vues, modales, état de l'appli)
+  valtrackDb.js       lecture / écriture Supabase
+  supabaseClient.js   connexion Supabase
+  domain/             calculs purs, testés
+    stats.js          stats joueurs : ajout/retrait d'un match, dérivées (KD, KDA…), tri
+    records.js        format BO3/BO5, MVP/MJ, records sur un match
+    elo.js            classement Elo des équipes
+    filters.js        filtres du classement et des records
+supabase/
+  securite-rls.sql    règles d'accès : lecture publique, écriture réservée aux connectés
+```
+
+## Sécurité
+
+La clé `VITE_SUPABASE_ANON_KEY` est publique par nature (elle finit dans le JavaScript du
+site). Ce qui protège les données, ce sont les règles RLS de Supabase : voir
+`supabase/securite-rls.sql` et le bouton **Connexion** en haut de l'appli.

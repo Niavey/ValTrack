@@ -89,7 +89,7 @@ function throwIfError(error) {
   if (error) throw error;
 }
 
-async function fetchAll(table, columns = "*") {
+async function fetchAll(table, columns = "*", applyFilter = null) {
   ensureConfigured();
   console.log(`[ValTrack] Chargement de ${table}...`);
 
@@ -98,6 +98,7 @@ async function fetchAll(table, columns = "*") {
 
   while (true) {
     let query = supabase.from(table).select(columns);
+    if (applyFilter) query = applyFilter(query);
     for (const key of ORDER_KEYS[table] || []) {
       query = query.order(key, { ascending: true });
     }
@@ -124,9 +125,16 @@ async function fetchTeamLogosSafely(onLogo) {
   ensureConfigured();
   console.log("[ValTrack] Chargement / migration progressive des logos...");
 
-  // Cette requête ne récupère que les petites clés texte.
-  const keys = await fetchAll("team_logos", "team_key");
-  let loaded = 0;
+  // Logos déjà migrés (simples URL) : une seule requête pour tous.
+  const migrated = await fetchAll("team_logos", "team_key,data_url", (q) => q.not("data_url", "like", "data:%"));
+  for (const row of migrated) {
+    if (row.data_url && typeof onLogo === "function") onLogo(row.team_key, row.data_url);
+  }
+
+  // Anciens logos encore en base64 : on ne récupère que leurs clés (les Data URL sont lourdes),
+  // puis on les traite un par un.
+  const keys = await fetchAll("team_logos", "team_key", (q) => q.like("data_url", "data:%"));
+  let loaded = migrated.length;
 
   for (const row of keys) {
     try {
@@ -165,7 +173,7 @@ async function fetchTeamLogosSafely(onLogo) {
     }
   }
 
-  console.log(`[ValTrack] Logos terminés : ${loaded}/${keys.length}`);
+  console.log(`[ValTrack] Logos terminés : ${loaded}/${migrated.length + keys.length}`);
 }
 
 
@@ -353,19 +361,43 @@ export async function upsertMatchDb(tournamentId, match) {
     .upsert(matchToRow(tournamentId, match), { onConflict: "id" });
   throwIfError(matchError);
 
+  const rows = statRowsForMatch(match);
+
+  // On écrit d'abord les nouvelles lignes, puis on supprime seulement celles des joueurs
+  // retirés du match. Avant, tout était supprimé puis réinséré : si l'insertion échouait,
+  // les stats du match étaient perdues.
+  if (rows.length) {
+    const { error: upsertError } = await supabase
+      .from("match_player_stats")
+      .upsert(rows, { onConflict: "match_id,player_id" });
+
+    // 42P10 = pas de contrainte unique sur (match_id, player_id) dans la base :
+    // on garde alors l'ancien comportement pour ne rien casser.
+    if (upsertError?.code === "42P10") {
+      await replaceMatchStatsLegacy(match.id, rows);
+      return;
+    }
+    throwIfError(upsertError);
+  }
+
+  let cleanup = supabase.from("match_player_stats").delete().eq("match_id", match.id);
+  if (rows.length) {
+    const kept = rows.map((r) => `"${String(r.player_id).replace(/"/g, '\\"')}"`).join(",");
+    cleanup = cleanup.not("player_id", "in", `(${kept})`);
+  }
+  const { error: cleanupError } = await cleanup;
+  throwIfError(cleanupError);
+}
+
+async function replaceMatchStatsLegacy(matchId, rows) {
   const { error: deleteStatsError } = await supabase
     .from("match_player_stats")
     .delete()
-    .eq("match_id", match.id);
+    .eq("match_id", matchId);
   throwIfError(deleteStatsError);
 
-  const rows = statRowsForMatch(match);
-  if (rows.length) {
-    const { error: statsError } = await supabase
-      .from("match_player_stats")
-      .insert(rows);
-    throwIfError(statsError);
-  }
+  const { error: statsError } = await supabase.from("match_player_stats").insert(rows);
+  throwIfError(statsError);
 }
 
 export async function setMatchAppliedDb(matchId, applied) {

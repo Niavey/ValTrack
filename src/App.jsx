@@ -2,49 +2,23 @@ import { useState, useEffect, useMemo, useRef, useDeferredValue } from "react";
 import {
   Search, Plus, Upload, X, ChevronLeft, Crosshair,
   Trash2, ArrowUp, ArrowDown, Swords, Loader2, Pencil, UserCog, ListPlus,
-  Trophy, Award, Image as ImageIcon, Globe, Users, Crown, CalendarDays, Flame, GitCompare, Shield,
+  Trophy, Award, Image as ImageIcon, Globe, Users, Crown, Flame, GitCompare, Shield,
 } from "lucide-react";
-import Papa from "papaparse";
-import * as XLSX from "xlsx";
 import "flag-icons/css/flag-icons.min.css";
-import { isSupabaseConfigured } from "./supabaseClient";
+import { isSupabaseConfigured, supabase } from "./supabaseClient";
 import {
   loadValtrackData, upsertPlayerDb, upsertPlayersDb, deletePlayerDb,
   upsertTournamentDb, upsertTeamDb, upsertMatchDb, setMatchAppliedDb,
   setTeamLogoDb, setHiddenTeamDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
 } from "./valtrackDb";
+import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
+import { ELO_MAX, computeTeamElo, getTeamProfile } from "./domain/elo.js";
+import { DEFAULT_DATA_FILTERS, tournamentYear, normalizedTeamName, filterTournamentScope, eligiblePlayerIdsForFilters, trimTournamentStatsForFilters, buildFilteredLeaderboardPlayers } from "./domain/filters.js";
+import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
 
 const STORAGE_KEY = "vt_players_v2";
 const TOURNAMENTS_KEY = "vt_tournaments_v1";
 const HIDDEN_TEAMS_KEY = "vt_hidden_teams_v1";
-
-// ---------- helpers ----------
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-
-const num = (v) => {
-  const n = parseFloat(String(v ?? "").replace(",", "."));
-  return isNaN(n) ? 0 : n;
-};
-
-const round = (v, d = 0) => {
-  const f = Math.pow(10, d);
-  return Math.round((v + Number.EPSILON) * f) / f;
-};
-
-// a percentage sometimes arrives as a fraction (0.72) from spreadsheet % formatting
-const normPct = (v) => {
-  const n = num(v);
-  return n !== 0 && Math.abs(n) <= 1 ? n * 100 : n;
-};
-
-function normalizeHeader(h) {
-  return String(h || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/%/g, "pct")
-    .replace(/[^a-z0-9]/g, "");
-}
 
 function CountryFlag({ code, style = {} }) {
   if (!code || code.length !== 2) return null;
@@ -63,568 +37,6 @@ function CountryFlag({ code, style = {} }) {
   );
 }
 
-const COUNTRIES = [
-  ["FR", "France"], ["BE", "Belgique"], ["CH", "Suisse"], ["GB", "Royaume-Uni"],
-  ["DE", "Allemagne"], ["ES", "Espagne"], ["IT", "Italie"], ["PT", "Portugal"],
-  ["NL", "Pays-Bas"], ["SE", "Suède"], ["DK", "Danemark"], ["NO", "Norvège"],
-  ["FI", "Finlande"], ["PL", "Pologne"], ["TR", "Turquie"], ["RU", "Russie"],
-  ["KZ", "Kazakhstan"], ["UA", "Ukraine"], ["AT", "Autriche"], ["CZ", "République tchèque"],
-  ["SK", "Slovaquie"], ["HU", "Hongrie"], ["RO", "Roumanie"], ["BG", "Bulgarie"],
-  ["GR", "Grèce"], ["HR", "Croatie"], ["RS", "Serbie"], ["IS", "Islande"],
-  ["IE", "Irlande"], ["US", "États-Unis"], ["CA", "Canada"], ["BR", "Brésil"],
-  ["AR", "Argentine"], ["CL", "Chili"], ["MX", "Mexique"], ["KR", "Corée du Sud"],
-  ["JP", "Japon"], ["CN", "Chine"], ["TW", "Taïwan"], ["HK", "Hong Kong"],
-  ["SG", "Singapour"], ["TH", "Thaïlande"], ["PH", "Philippines"],
-  ["ID", "Indonésie"], ["VN", "Vietnam"], ["IN", "Inde"], ["AU", "Australie"],
-  ["NZ", "Nouvelle-Zélande"], ["MA", "Maroc"], ["DZ", "Algérie"],
-  ["TN", "Tunisie"], ["EG", "Égypte"], ["SA", "Arabie saoudite"],
-  ["AE", "Émirats arabes unis"], ["IL", "Israël"],
-];
-
-// canonical stat fields, in the exact order requested
-const STAT_FIELDS = [
-  { key: "match", label: "Match", decimals: 0 },
-  { key: "maps", label: "Maps", decimals: 0 },
-  { key: "round", label: "Round", decimals: 0 },
-  { key: "rating", label: "Rating", decimals: 2 },
-  { key: "acs", label: "ACS", decimals: 0 },
-  { key: "kda", label: "KDA", decimals: 2 },
-  { key: "kd", label: "KD", decimals: 2 },
-  { key: "kill", label: "Kill", decimals: 0 },
-  { key: "death", label: "Death", decimals: 0 },
-  { key: "assist", label: "Assist", decimals: 0 },
-  { key: "multiKill", label: "Multi Kill", decimals: 0 },
-  { key: "kast", label: "KAST", decimals: 0, suffix: "%" },
-  { key: "fk", label: "FK", decimals: 0 },
-  { key: "fd", label: "FD", decimals: 0 },
-  { key: "kdDiff", label: "KD Diff", decimals: 0 },
-  { key: "fkDiff", label: "FK Diff", decimals: 0 },
-  { key: "clutch", label: "Clutch", decimals: 0 },
-  { key: "clutchAttempt", label: "Clutch Attempt", decimals: 0 },
-  { key: "clutchPct", label: "Clutch %", decimals: 0, suffix: "%" },
-  { key: "mvp", label: "MVP", decimals: 0 },
-  { key: "mj", label: "MJ", decimals: 0 },
-];
-
-const HEADLINE_KEYS = ["rating", "acs", "kd", "kda", "kast", "clutchPct", "mvp", "mj"];
-
-// single-match performance records — no Match/Maps/Round, those aren't personal records
-const RECORD_FIELDS = [
-  { key: "rating", label: "Rating", decimals: 2 },
-  { key: "acs", label: "ACS", decimals: 0 },
-  { key: "kda", label: "KDA", decimals: 2 },
-  { key: "kd", label: "KD", decimals: 2 },
-  { key: "kill", label: "Kill", decimals: 0 },
-  { key: "death", label: "Death", decimals: 0 },
-  { key: "assist", label: "Assist", decimals: 0 },
-  { key: "multiKill", label: "Multi Kill", decimals: 0 },
-  { key: "kast", label: "KAST", decimals: 0, suffix: "%" },
-  { key: "fk", label: "FK", decimals: 0 },
-  { key: "fd", label: "FD", decimals: 0 },
-  { key: "clutch", label: "Clutch", decimals: 0 },
-  { key: "clutchAttempt", label: "Clutch Attempt", decimals: 0 },
-  { key: "clutchPct", label: "Clutch %", decimals: 0, suffix: "%" },
-];
-
-// a match is BO3 if the winning side took exactly 2 maps, BO5 if it took exactly 3 —
-// works whether it was a sweep or went the distance
-function classifyMatchFormat(mapScores) {
-  if (!mapScores || mapScores.length === 0) return null;
-  let winsA = 0, winsB = 0;
-  mapScores.forEach((m) => {
-    const a = num(m.a), b = num(m.b);
-    if (a === 0 && b === 0) return;
-    if (a > b) winsA++; else if (b > a) winsB++;
-  });
-  const maxWins = Math.max(winsA, winsB);
-  if (maxWins === 2) return "BO3";
-  if (maxWins === 3) return "BO5";
-  return null;
-}
-
-// flattens every player-in-a-match stat line across all tournaments into BO3/BO5 buckets,
-// each entry carrying enough context (tournament, match label, opponent) to trace the record
-// MVP = highest rating in the match, all players combined. MJ = highest rating among the
-// players NOT on the MVP's team (i.e. the best performer on the opposing side).
-function computeMvpMj(matchStats, teamA, teamB) {
-  const entries = Object.entries(matchStats || {})
-    .filter(([, vals]) => hasStatValue(vals?.rating))
-    .map(([pid, vals]) => ({
-      pid, rating: num(vals.rating), onTeamA: !!teamA?.playerIds.includes(pid),
-    }));
-  if (entries.length === 0) return { mvpId: null, mjId: null };
-  const mvp = [...entries].sort((a, b) => b.rating - a.rating)[0];
-  const opponents = entries.filter((e) => e.onTeamA !== mvp.onTeamA);
-  const mj = opponents.length ? [...opponents].sort((a, b) => b.rating - a.rating)[0] : null;
-  return { mvpId: mvp.pid, mjId: mj?.pid || null };
-}
-
-// live tally across every recorded match, applied to the classement or not — same philosophy
-// as the BO3/BO5 records, which also don't care about the "applied" toggle
-function computeMvpMjCounts(tournaments) {
-  const counts = {};
-  tournaments.forEach((t) => {
-    (t.matches || []).forEach((m) => {
-      if (!m.stats || Object.keys(m.stats).length === 0) return;
-      const teamA = t.teams.find((x) => x.id === m.teamAId);
-      const teamB = t.teams.find((x) => x.id === m.teamBId);
-      const { mvpId, mjId } = computeMvpMj(m.stats, teamA, teamB);
-      if (mvpId) { counts[mvpId] = counts[mvpId] || { mvp: 0, mj: 0 }; counts[mvpId].mvp += 1; }
-      if (mjId) { counts[mjId] = counts[mjId] || { mvp: 0, mj: 0 }; counts[mjId].mj += 1; }
-    });
-  });
-  return counts;
-}
-
-// full recompute (not additive) of MVP/MJ totals from every already-applied match — used once
-// to backfill matches that existed before this feature, and safe to re-run (always idempotent)
-function recomputeMvpMjTotals(tournaments) {
-  const totals = {};
-  tournaments.forEach((t) => {
-    (t.matches || []).forEach((m) => {
-      if (!m.appliedToStats) return;
-      const teamA = t.teams.find((x) => x.id === m.teamAId);
-      const teamB = t.teams.find((x) => x.id === m.teamBId);
-      const { mvpId, mjId } = computeMvpMj(m.stats, teamA, teamB);
-      if (mvpId) { totals[mvpId] = totals[mvpId] || { mvp: 0, mj: 0 }; totals[mvpId].mvp += 1; }
-      if (mjId) { totals[mjId] = totals[mjId] || { mvp: 0, mj: 0 }; totals[mjId].mj += 1; }
-    });
-  });
-  return totals;
-}
-
-function collectMatchRecords(tournaments, players) {
-  const buckets = { BO3: [], BO5: [] };
-  tournaments.forEach((t) => {
-    (t.matches || []).forEach((m) => {
-      const format = classifyMatchFormat(m.mapScores);
-      if (!format) return;
-      const teamA = t.teams.find((x) => x.id === m.teamAId);
-      const teamB = t.teams.find((x) => x.id === m.teamBId);
-      Object.entries(m.stats || {}).forEach(([playerId, vals]) => {
-        const player = players.find((p) => p.id === playerId);
-        if (!player) return;
-        const onTeamA = teamA?.playerIds.includes(playerId);
-        const kill = num(vals.kill), death = num(vals.death), assist = num(vals.assist);
-        const clutch = num(vals.clutch), clutchAttempt = num(vals.clutchAttempt);
-        buckets[format].push({
-          playerId,
-          playerName: player.name,
-          tournamentName: t.name,
-          matchLabel: m.label,
-          opponentName: (onTeamA ? teamB?.name : teamA?.name) || "",
-          kill, death, assist,
-          multiKill: num(vals.multiKill) || (num(vals.doubleKill) + num(vals.tripleKill) + num(vals.quadKill) + num(vals.ace)),
-          acs: num(vals.acs),
-          rating: hasStatValue(vals.rating) ? num(vals.rating) : null,
-          kast: hasStatValue(vals.kast) ? normPct(vals.kast) : null,
-          fk: num(vals.fk),
-          fd: num(vals.fd),
-          clutch, clutchAttempt,
-          kd: death > 0 ? kill / death : kill,
-          kda: death > 0 ? (kill + assist) / death : kill + assist,
-          clutchPct: clutchAttempt > 0 ? (clutch / clutchAttempt) * 100 : 0,
-        });
-      });
-    });
-  });
-  return buckets;
-}
-
-// match-level (not player-level) records: which BO3/BO5 went the longest or shortest, by rounds
-function collectMatchDurationRecords(tournaments) {
-  const buckets = { BO3: [], BO5: [] };
-  tournaments.forEach((t) => {
-    (t.matches || []).forEach((m) => {
-      const format = classifyMatchFormat(m.mapScores);
-      if (!format) return;
-      const teamA = t.teams.find((x) => x.id === m.teamAId);
-      const teamB = t.teams.find((x) => x.id === m.teamBId);
-      const totalRounds = (m.mapScores || []).reduce((s, ms) => s + num(ms.a) + num(ms.b), 0);
-      buckets[format].push({
-        tournamentName: t.name,
-        matchLabel: m.label,
-        teamAName: teamA?.name || "?",
-        teamBName: teamB?.name || "?",
-        totalRounds,
-      });
-    });
-  });
-  return buckets;
-}
-
-const MULTI_KILL_DETAIL_FIELDS = [
-  { key: "doubleKill", label: "Double" },
-  { key: "tripleKill", label: "Triple" },
-  { key: "quadKill", label: "Quad" },
-  { key: "ace", label: "Ace" },
-];
-
-const CLUTCH_DETAIL_FIELDS = [
-  { key: "clutch1v1", label: "Clutch 1v1" },
-  { key: "clutch1v2", label: "Clutch 1v2" },
-  { key: "clutch1v3", label: "Clutch 1v3" },
-  { key: "clutch1v4", label: "Clutch 1v4" },
-  { key: "clutch1v5", label: "Clutch 1v5" },
-];
-
-const DETAIL_STAT_FIELDS = [...MULTI_KILL_DETAIL_FIELDS, ...CLUTCH_DETAIL_FIELDS];
-const DETAIL_STAT_KEYS = new Set(DETAIL_STAT_FIELDS.map((f) => f.key));
-const STAT_LABELS = Object.fromEntries([...STAT_FIELDS, ...DETAIL_STAT_FIELDS].map((f) => [f.key, f.label]));
-
-const MATCH_INPUT_FIELDS = [
-  "maps", "round", "kill", "death", "assist", "acs", "rating", "kast", "fk", "fd",
-  "doubleKill", "tripleKill", "quadKill", "ace",
-  "clutch1v1", "clutch1v2", "clutch1v3", "clutch1v4", "clutch1v5",
-  "clutchAttempt",
-];
-// volume fields aren't ranked as "performance" — everything else is, lower-is-better only for Death
-const RANK_ASCENDING = new Set(["death"]);
-
-// for single-match records: Death and FD are bad stats — the lowest value is the "record"
-const RECORD_LOWER_BETTER = new Set(["death", "fd"]);
-
-// picks the standout entry for a stat: highest for most fields, lowest for Death/FD.
-// ties on Clutch % are broken by who actually won/lost more clutches, not just the percentage.
-function validRecordEntries(entries, field) {
-  return entries.filter((entry) => entry[field.key] !== null && entry[field.key] !== undefined && entry[field.key] !== "");
-}
-
-function pickBest(entries, field) {
-  const valid = validRecordEntries(entries, field);
-  const lowerIsBetter = RECORD_LOWER_BETTER.has(field.key);
-  return [...valid].sort((a, b) => {
-    const diff = lowerIsBetter ? a[field.key] - b[field.key] : b[field.key] - a[field.key];
-    if (diff !== 0) return diff;
-    if (field.key === "clutchPct") return b.clutch - a.clutch;
-    return 0;
-  })[0];
-}
-function pickWorst(entries, field) {
-  const valid = validRecordEntries(entries, field);
-  const lowerIsBetter = RECORD_LOWER_BETTER.has(field.key);
-  return [...valid].sort((a, b) => {
-    const diff = lowerIsBetter ? b[field.key] - a[field.key] : a[field.key] - b[field.key];
-    if (diff !== 0) return diff;
-    if (field.key === "clutchPct") return b.clutchAttempt - a.clutchAttempt;
-    return 0;
-  })[0];
-}
-const RANKABLE_KEYS = new Set(STAT_FIELDS.map((f) => f.key).filter((k) => !["match", "maps", "round"].includes(k)));
-
-const TROPHY_TYPES = ["Split", "Masters", "Champions", "Autre"];
-const TROPHY_RANK = { Split: 1, Masters: 2, Champions: 3, Autre: 0 };
-const TROPHY_COLOR = { Split: "#8792A0", Masters: "#C77B4B", Champions: "#E8B95E", Autre: "#8792A0" };
-
-// team Elo ranking — global registry keyed by team name, recomputed live from every match
-const ELO_START = 1000;
-const ELO_MIN = 0;
-const ELO_MAX = 2000;
-const ELO_K = 48;
-const ELO_SCALE = 400;
-const TOURNAMENT_ELO_BONUS = { Split: 30, Masters: 60, Champions: 100, Autre: 20 };
-
-function clampElo(v) {
-  return Math.max(ELO_MIN, Math.min(ELO_MAX, v));
-}
-
-// which team won a match: explicit winnerTeamId if set, otherwise inferred from the map score
-function matchWinnerTeamId(m) {
-  if (m.winnerTeamId) return m.winnerTeamId;
-  if (!m.mapScores || m.mapScores.length === 0) return null;
-  let winsA = 0, winsB = 0;
-  m.mapScores.forEach((s) => {
-    const a = num(s.a), b = num(s.b);
-    if (a === 0 && b === 0) return;
-    if (a > b) winsA++; else if (b > a) winsB++;
-  });
-  if (winsA === winsB) return null;
-  return winsA > winsB ? m.teamAId : m.teamBId;
-}
-
-// replays every recorded match (applied to the classement or not) in chronological order —
-// tournaments sorted by date, matches in the order they were added within each tournament
-function getStompMultiplier(mapScores) {
-  if (!mapScores || mapScores.length === 0) return 1;
-
-  let roundsA = 0;
-  let roundsB = 0;
-  mapScores.forEach((map) => {
-    roundsA += num(map.a);
-    roundsB += num(map.b);
-  });
-
-  const totalRounds = roundsA + roundsB;
-  if (totalRounds === 0) return 1;
-
-  const roundDiff = Math.abs(roundsA - roundsB);
-  const dominance = roundDiff / totalRounds;
-  return 1 + dominance * 0.65;
-}
-
-function computeTeamElo(tournaments) {
-  const registry = {}; // lowercased name -> { name, elo, history: [...] }
-  const getEntry = (name) => {
-    const key = name.trim().toLowerCase();
-    if (!registry[key]) registry[key] = { name, elo: ELO_START, history: [] };
-    registry[key].name = name; // keep the most recently seen casing
-    return registry[key];
-  };
-
-  const ordered = [...tournaments].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-  ordered.forEach((t) => {
-    (t.matches || []).forEach((m) => {
-      const teamA = t.teams.find((x) => x.id === m.teamAId);
-      const teamB = t.teams.find((x) => x.id === m.teamBId);
-      if (!teamA || !teamB) return;
-      const winnerId = matchWinnerTeamId(m);
-      if (!winnerId) return;
-
-      const eA = getEntry(teamA.name);
-      const eB = getEntry(teamB.name);
-      const beforeA = eA.elo, beforeB = eB.elo;
-      const expectedA = 1 / (1 + Math.pow(10, (beforeB - beforeA) / ELO_SCALE));
-      const actualA = winnerId === teamA.id ? 1 : 0;
-      const stompMultiplier = getStompMultiplier(m.mapScores);
-      const matchK = ELO_K * stompMultiplier;
-      eA.elo = clampElo(beforeA + matchK * (actualA - expectedA));
-      eB.elo = clampElo(beforeB + matchK * ((1 - actualA) - (1 - expectedA)));
-
-      eA.history.push({ type: "match", tournamentName: t.name, matchLabel: m.label, opponentName: teamB.name, result: actualA ? "W" : "L", delta: eA.elo - beforeA, eloAfter: eA.elo });
-      eB.history.push({ type: "match", tournamentName: t.name, matchLabel: m.label, opponentName: teamA.name, result: actualA ? "L" : "W", delta: eB.elo - beforeB, eloAfter: eB.elo });
-    });
-
-    if (t.finished && t.winnerTeamId) {
-      const winnerTeam = t.teams.find((x) => x.id === t.winnerTeamId);
-      if (winnerTeam) {
-        const e = getEntry(winnerTeam.name);
-        const before = e.elo;
-        const bonus = TOURNAMENT_ELO_BONUS[t.type] ?? 0;
-        e.elo = clampElo(before + bonus);
-        e.history.push({ type: "trophy", tournamentName: t.name, tournamentType: t.type, delta: e.elo - before, eloAfter: e.elo });
-      }
-    }
-  });
-
-  return Object.values(registry).sort((a, b) => b.elo - a.elo);
-}
-
-// everything shown on a team's profile page: bilan, extremes, palmarès, roster, recent history
-function getTeamProfile(nameKey, tournaments, players) {
-  const ranking = computeTeamElo(tournaments);
-  const idx = ranking.findIndex((t) => t.name.trim().toLowerCase() === nameKey);
-  if (idx === -1) return null;
-  const entry = ranking[idx];
-  const matches = entry.history.filter((h) => h.type === "match");
-  const wins = matches.filter((h) => h.result === "W").length;
-  const losses = matches.filter((h) => h.result === "L").length;
-  const bestGain = matches.length ? matches.reduce((a, b) => (b.delta > a.delta ? b : a)) : null;
-  const worstLoss = matches.length ? matches.reduce((a, b) => (b.delta < a.delta ? b : a)) : null;
-  const trophies = entry.history.filter((h) => h.type === "trophy");
-
-  const playerIdSet = new Set();
-  tournaments.forEach((t) => t.teams.forEach((team) => {
-    if (team.name.trim().toLowerCase() === nameKey) team.playerIds.forEach((id) => playerIdSet.add(id));
-  }));
-  const roster = [...playerIdSet].map((id) => players.find((p) => p.id === id)).filter(Boolean);
-
-  return {
-    entry, rank: idx + 1, wins, losses, bestGain, worstLoss, trophies, roster,
-    recent: [...entry.history].reverse().slice(0, 12),
-  };
-}
-
-// these are never typed by hand — always computed from the raw counts
-const DERIVED_KEYS = new Set(["kd", "kda", "kdDiff", "fkDiff", "clutchPct", "mvp", "mj"]);
-const FORM_INPUT_FIELDS = STAT_FIELDS.filter((f) => !DERIVED_KEYS.has(f.key));
-
-function hasEnteredDetail(stats, keys) {
-  return keys.some((key) => stats?.[key] !== "" && stats?.[key] !== undefined && stats?.[key] !== null);
-}
-
-function multiKillFromDetails(stats) {
-  return num(stats.doubleKill) + num(stats.tripleKill) + num(stats.quadKill) + num(stats.ace);
-}
-
-function clutchFromDetails(stats) {
-  return num(stats.clutch1v1) + num(stats.clutch1v2) + num(stats.clutch1v3) + num(stats.clutch1v4) + num(stats.clutch1v5);
-}
-
-function computeMatchDerived(stats) {
-  const multiKill = hasEnteredDetail(stats, MULTI_KILL_DETAIL_FIELDS.map((f) => f.key))
-    ? multiKillFromDetails(stats)
-    : num(stats.multiKill);
-  const clutch = hasEnteredDetail(stats, CLUTCH_DETAIL_FIELDS.map((f) => f.key))
-    ? clutchFromDetails(stats)
-    : num(stats.clutch);
-  return computeDerived({ ...stats, multiKill, clutch });
-}
-
-function computeDerived(stats) {
-  const kill = num(stats.kill), death = num(stats.death), assist = num(stats.assist);
-  const fk = num(stats.fk), fd = num(stats.fd);
-  const clutch = num(stats.clutch), clutchAttempt = num(stats.clutchAttempt);
-  const multiKill = hasEnteredDetail(stats, MULTI_KILL_DETAIL_FIELDS.map((f) => f.key))
-    ? multiKillFromDetails(stats)
-    : num(stats.multiKill);
-  return {
-    ...stats,
-    multiKill,
-    kd: death > 0 ? kill / death : kill,
-    kda: death > 0 ? (kill + assist) / death : kill + assist,
-    kdDiff: kill - death,
-    fkDiff: fk - fd,
-    clutchPct: clutchAttempt > 0 ? (clutch / clutchAttempt) * 100 : 0,
-  };
-}
-
-// tie-break chains: applied in order, independent of the primary column's sort direction
-const FIELD_ALIASES = {
-  joueur: "name", nom: "name", name: "name", player: "name", pseudo: "name",
-  equipe: "team", team: "team", org: "team",
-  nationalite: "nationality", nationality: "nationality", pays: "nationality", country: "nationality",
-  match: "match", matchs: "match", matches: "match", nbmatch: "match", nombredematchs: "match",
-  maps: "maps", map: "maps",
-  round: "round", rounds: "round",
-  rating: "rating", rate: "rating",
-  acs: "acs",
-  kda: "kda",
-  kd: "kd", ratiokd: "kd", kdratio: "kd",
-  kill: "kill", kills: "kill",
-  death: "death", deaths: "death",
-  assist: "assist", assists: "assist",
-  multikill: "multiKill", multikills: "multiKill",
-  double: "doubleKill", doublekill: "doubleKill", doublekills: "doubleKill",
-  triple: "tripleKill", triplekill: "tripleKill", triplekills: "tripleKill",
-  quad: "quadKill", quadkill: "quadKill", quadkills: "quadKill", quadruple: "quadKill",
-  ace: "ace", aces: "ace",
-  clutch1v1: "clutch1v1", clutch1v2: "clutch1v2", clutch1v3: "clutch1v3", clutch1v4: "clutch1v4", clutch1v5: "clutch1v5",
-  kast: "kast",
-  fk: "fk", firstkills: "fk", premierskills: "fk",
-  fd: "fd", firstdeaths: "fd", premieresmorts: "fd",
-  kddiff: "kdDiff", diffkd: "kdDiff",
-  fkdiff: "fkDiff", difffk: "fkDiff",
-  clutch: "clutch", clutchsgagnes: "clutch", clutcheswon: "clutch", clutchwon: "clutch", clutchgagne: "clutch",
-  clutchattempt: "clutchAttempt", clutchattempts: "clutchAttempt", tentativesclutch: "clutchAttempt", tentativeclutch: "clutchAttempt",
-  clutchpct: "clutchPct", clutchpourcentage: "clutchPct", pctclutch: "clutchPct",
-};
-
-function mapRow(raw) {
-  const row = {};
-  Object.entries(raw).forEach(([h, v]) => {
-    const key = FIELD_ALIASES[normalizeHeader(h)];
-    if (key) row[key] = v;
-  });
-  return row;
-}
-
-function emptyStats() {
-  const s = {};
-  STAT_FIELDS.forEach((f) => { s[f.key] = ""; });
-  return s;
-}
-
-function fmtStat(v, field) {
-  if (v === "" || v === undefined || v === null) return "—";
-  let n = num(v);
-  if (field.suffix === "%" && n !== 0 && Math.abs(n) <= 1) n *= 100;
-  return round(n, field.decimals) + (field.suffix || "");
-}
-
-// fields where "did it go up or down" isn't meaningful — they only ever accumulate
-const NO_EVOLUTION_KEYS = new Set(["match", "maps", "round"]);
-
-// compares the DISPLAYED (rounded) value against the snapshot taken just before the last
-// match was added — green if it rose, red if it fell, null (default color) if unchanged or unknown
-function evolutionColor(player, field) {
-  if (NO_EVOLUTION_KEYS.has(field.key) || !player.prevStats) return null;
-  const displayed = (v) => {
-    let n = num(v);
-    if (field.suffix === "%" && n !== 0 && Math.abs(n) <= 1) n *= 100;
-    return round(n, field.decimals);
-  };
-  const cur = displayed(player.stats[field.key]);
-  const prev = displayed(player.prevStats[field.key]);
-  if (cur === prev) return null;
-  return cur > prev ? "var(--green)" : "var(--red)";
-}
-
-function currentTeam(player) {
-  const h = player.teamHistory || [];
-  if (!h.length) return "";
-  const last = h[h.length - 1];
-  return last.until ? "" : last.team;
-}
-
-// label for a team-history row: "depuis X" only for the still-current spell; a closed spell
-// shows its actual span (explicit "until", or inferred from when the next team started)
-function teamPeriodLabel(entry, isCurrent, impliedUntil) {
-  const until = entry.until || impliedUntil || "";
-  if (isCurrent) return entry.since ? `depuis ${entry.since}` : "";
-  if (entry.since && until) return `${entry.since} → ${until}`;
-  if (until) return `jusqu'à ${until}`;
-  if (entry.since) return `depuis ${entry.since}`;
-  return "";
-}
-
-// tie-break chains: when the sorted column is equal, fall through these criteria in order
-const TIEBREAKERS = {
-  rating: [["round", "desc"], ["maps", "desc"], ["match", "desc"]],
-  acs: [["round", "desc"], ["maps", "desc"], ["match", "desc"]],
-  kast: [["round", "desc"], ["maps", "desc"], ["match", "desc"]],
-  kda: [["kill", "desc"]],
-  kd: [["kill", "desc"]],
-  kill: [["round", "asc"]],
-  assist: [["round", "asc"]],
-  fk: [["round", "asc"]],
-  fd: [["round", "asc"]],
-  clutch: [["clutchAttempt", "asc"]],
-  clutchPct: [["clutchAttempt", "desc"]],
-  kdDiff: [["round", "asc"]],
-  fkDiff: [["round", "asc"]],
-  match: [["rating", "desc"]],
-  maps: [["rating", "desc"]],
-  round: [["rating", "desc"]],
-};
-
-function tieValue(player, key, dir) {
-  const v = num(player.stats[key]);
-  return dir === "asc" ? -v : v;
-}
-
-// ascending-style comparator for a stat column, falling through its tie-break chain, then name
-function statCompareAsc(a, b, key) {
-  const field = STAT_FIELDS.find((f) => f.key === key);
-  const decimals = field ? field.decimals : 2;
-  // percentage fields may be stored as a fraction (0.72) or as a full value (72) depending on
-  // where the number came from — normalize both the same way fmtStat displays them
-  const rawA = field && field.suffix === "%" ? normPct(a.stats[key]) : num(a.stats[key]);
-  const rawB = field && field.suffix === "%" ? normPct(b.stats[key]) : num(b.stats[key]);
-  // compare the rounded (displayed) value first — two players both showing "1.20" should
-  // count as tied, even if their raw stored values differ by an invisible fraction
-  const diff = round(rawA, decimals) - round(rawB, decimals);
-  if (diff !== 0) return diff;
-  for (const [tKey, dir] of TIEBREAKERS[key] || []) {
-    const d = tieValue(a, tKey, dir) - tieValue(b, tKey, dir);
-    if (d !== 0) return d;
-  }
-  return a.name.localeCompare(b.name, "fr", { sensitivity: "base" });
-}
-
-function getLogo(teamLogos, teamName) {
-  if (!teamName) return null;
-  return teamLogos[teamName.trim().toLowerCase()] || null;
-}
-
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = reject;
-    r.readAsDataURL(file);
-  });
-}
-
 // pressing Enter moves to the next input in the same table/group instead of submitting or doing nothing
 function focusNextInput(e) {
   if (e.key !== "Enter") return;
@@ -634,236 +46,6 @@ function focusNextInput(e) {
   const inputs = Array.from(container.querySelectorAll("input"));
   const idx = inputs.indexOf(e.currentTarget);
   if (idx > -1 && idx < inputs.length - 1) inputs[idx + 1].focus();
-}
-
-// rank of a player on a given stat among players who have entered a value for it
-function getRank(players, key, playerId) {
-  if (!RANKABLE_KEYS.has(key)) return null;
-  const ascending = RANK_ASCENDING.has(key);
-  const withVal = players.filter((p) => p.stats[key] !== "" && p.stats[key] !== undefined && p.stats[key] !== null);
-  if (withVal.length < 2) return null;
-  const sorted = [...withVal].sort((a, b) => {
-    const av = num(a.stats[key]), bv = num(b.stats[key]);
-    return ascending ? av - bv : bv - av;
-  });
-  const idx = sorted.findIndex((p) => p.id === playerId);
-  return idx === -1 ? null : idx + 1;
-}
-
-function countryLabel(code) {
-  const c = COUNTRIES.find((x) => x[0] === code);
-  return c ? c[1] : code || "";
-}
-
-function migratePlayer(p) {
-  return {
-    id: p.id || uid(),
-    name: p.name || "",
-    nationality: p.nationality || "",
-    teamHistory: (p.teamHistory && p.teamHistory.length) ? p.teamHistory : (p.team ? [{ id: uid(), team: p.team, since: "" }] : []),
-    trophies: p.trophies || [],
-    stats: { ...emptyStats(), ...(p.stats || {}) },
-    prevStats: p.prevStats || null,
-  };
-}
-
-function migrateTournament(t) {
-  return {
-    id: t.id || uid(),
-    name: t.name || "",
-    type: t.type || TROPHY_TYPES[0],
-    date: t.date || "",
-    format: { groups: !!t.format?.groups, doubleElim: !!t.format?.doubleElim },
-    teams: (t.teams || []).map((team) => ({ ...team, eliminated: !!team.eliminated })),
-    matches: (t.matches || []).map((m) => ({ ...m, appliedToStats: m.appliedToStats !== undefined ? m.appliedToStats : true })),
-    winnerTeamId: t.winnerTeamId || null,
-    finished: !!t.finished,
-  };
-}
-
-// running totals + weighted-average recompute when adding a new match's raw numbers
-function hasStatValue(v) {
-  return v !== "" && v !== undefined && v !== null && !Number.isNaN(Number(String(v).replace(",", ".")));
-}
-
-function averageCount(stats, key) {
-  const stored = stats?.[`_${key}Count`];
-  if (stored !== undefined && stored !== null && stored !== "") return Math.max(0, num(stored));
-  return hasStatValue(stats?.[key]) && num(stats?.match) > 0 ? num(stats.match) : 0;
-}
-
-function applyMatchToStats(stats, m) {
-  const oldMatch = num(stats.match);
-  const totMatch = oldMatch + 1;
-
-  const totMaps = num(stats.maps) + num(m.maps);
-  const totRound = num(stats.round) + num(m.round);
-  const totKill = num(stats.kill) + num(m.kill);
-  const totDeath = num(stats.death) + num(m.death);
-  const totAssist = num(stats.assist) + num(m.assist);
-  const totFk = num(stats.fk) + num(m.fk);
-  const totFd = num(stats.fd) + num(m.fd);
-
-  const matchDoubleKill = num(m.doubleKill);
-  const matchTripleKill = num(m.tripleKill);
-  const matchQuadKill = num(m.quadKill);
-  const matchAce = num(m.ace);
-  const matchMultiKill = hasEnteredDetail(m, MULTI_KILL_DETAIL_FIELDS.map((f) => f.key))
-    ? matchDoubleKill + matchTripleKill + matchQuadKill + matchAce
-    : num(m.multiKill);
-
-  const totDoubleKill = num(stats.doubleKill) + matchDoubleKill;
-  const totTripleKill = num(stats.tripleKill) + matchTripleKill;
-  const totQuadKill = num(stats.quadKill) + matchQuadKill;
-  const totAce = num(stats.ace) + matchAce;
-  const totMultiKill = num(stats.multiKill) + matchMultiKill;
-
-  const matchClutch1v1 = num(m.clutch1v1);
-  const matchClutch1v2 = num(m.clutch1v2);
-  const matchClutch1v3 = num(m.clutch1v3);
-  const matchClutch1v4 = num(m.clutch1v4);
-  const matchClutch1v5 = num(m.clutch1v5);
-  const matchClutch = hasEnteredDetail(m, CLUTCH_DETAIL_FIELDS.map((f) => f.key))
-    ? matchClutch1v1 + matchClutch1v2 + matchClutch1v3 + matchClutch1v4 + matchClutch1v5
-    : num(m.clutch);
-
-  const totClutch1v1 = num(stats.clutch1v1) + matchClutch1v1;
-  const totClutch1v2 = num(stats.clutch1v2) + matchClutch1v2;
-  const totClutch1v3 = num(stats.clutch1v3) + matchClutch1v3;
-  const totClutch1v4 = num(stats.clutch1v4) + matchClutch1v4;
-  const totClutch1v5 = num(stats.clutch1v5) + matchClutch1v5;
-  const totClutch = num(stats.clutch) + matchClutch;
-  const totClutchAttempt = num(stats.clutchAttempt) + num(m.clutchAttempt);
-
-  // Rating et KAST ignorent complètement les matchs où la valeur n'a pas été saisie.
-  const oldRatingCount = averageCount(stats, "rating");
-  const hasRating = hasStatValue(m.rating);
-  const ratingCount = oldRatingCount + (hasRating ? 1 : 0);
-  const rating = ratingCount > 0
-    ? (num(stats.rating) * oldRatingCount + (hasRating ? num(m.rating) : 0)) / ratingCount
-    : "";
-
-  const oldKastCount = averageCount(stats, "kast");
-  const hasKast = hasStatValue(m.kast);
-  const kastCount = oldKastCount + (hasKast ? 1 : 0);
-  const kast = kastCount > 0
-    ? (normPct(stats.kast) * oldKastCount + (hasKast ? normPct(m.kast) : 0)) / kastCount
-    : "";
-
-  // ACS conserve le comportement historique (moyenne par match).
-  const acs = (num(stats.acs) * oldMatch + num(m.acs)) / totMatch;
-
-  return {
-    ...stats,
-    match: totMatch,
-    maps: totMaps,
-    round: totRound,
-    rating,
-    _ratingCount: ratingCount,
-    acs,
-    kast,
-    _kastCount: kastCount,
-    kd: totDeath > 0 ? totKill / totDeath : totKill,
-    kda: totDeath > 0 ? (totKill + totAssist) / totDeath : totKill + totAssist,
-    kill: totKill, death: totDeath, assist: totAssist,
-    multiKill: totMultiKill,
-    doubleKill: totDoubleKill, tripleKill: totTripleKill, quadKill: totQuadKill, ace: totAce,
-    fk: totFk, fd: totFd,
-    kdDiff: totKill - totDeath,
-    fkDiff: totFk - totFd,
-    clutch: totClutch,
-    clutch1v1: totClutch1v1, clutch1v2: totClutch1v2, clutch1v3: totClutch1v3,
-    clutch1v4: totClutch1v4, clutch1v5: totClutch1v5,
-    clutchAttempt: totClutchAttempt,
-    clutchPct: totClutchAttempt > 0 ? (totClutch / totClutchAttempt) * 100 : 0,
-  };
-}
-
-function removeMatchFromStats(stats, m) {
-  const oldMatch = num(stats.match);
-  if (oldMatch <= 0) return stats;
-  const totMatch = Math.max(0, oldMatch - 1);
-
-  const sub = (key) => Math.max(0, num(stats[key]) - num(m[key]));
-  const totMaps = sub("maps");
-  const totRound = sub("round");
-  const totKill = sub("kill");
-  const totDeath = sub("death");
-  const totAssist = sub("assist");
-  const totFk = sub("fk");
-  const totFd = sub("fd");
-
-  const matchDoubleKill = num(m.doubleKill);
-  const matchTripleKill = num(m.tripleKill);
-  const matchQuadKill = num(m.quadKill);
-  const matchAce = num(m.ace);
-  const matchMultiKill = hasEnteredDetail(m, MULTI_KILL_DETAIL_FIELDS.map((f) => f.key))
-    ? matchDoubleKill + matchTripleKill + matchQuadKill + matchAce
-    : num(m.multiKill);
-
-  const totDoubleKill = Math.max(0, num(stats.doubleKill) - matchDoubleKill);
-  const totTripleKill = Math.max(0, num(stats.tripleKill) - matchTripleKill);
-  const totQuadKill = Math.max(0, num(stats.quadKill) - matchQuadKill);
-  const totAce = Math.max(0, num(stats.ace) - matchAce);
-  const totMultiKill = Math.max(0, num(stats.multiKill) - matchMultiKill);
-
-  const matchClutch1v1 = num(m.clutch1v1);
-  const matchClutch1v2 = num(m.clutch1v2);
-  const matchClutch1v3 = num(m.clutch1v3);
-  const matchClutch1v4 = num(m.clutch1v4);
-  const matchClutch1v5 = num(m.clutch1v5);
-  const matchClutch = hasEnteredDetail(m, CLUTCH_DETAIL_FIELDS.map((f) => f.key))
-    ? matchClutch1v1 + matchClutch1v2 + matchClutch1v3 + matchClutch1v4 + matchClutch1v5
-    : num(m.clutch);
-
-  const totClutch1v1 = Math.max(0, num(stats.clutch1v1) - matchClutch1v1);
-  const totClutch1v2 = Math.max(0, num(stats.clutch1v2) - matchClutch1v2);
-  const totClutch1v3 = Math.max(0, num(stats.clutch1v3) - matchClutch1v3);
-  const totClutch1v4 = Math.max(0, num(stats.clutch1v4) - matchClutch1v4);
-  const totClutch1v5 = Math.max(0, num(stats.clutch1v5) - matchClutch1v5);
-  const totClutch = Math.max(0, num(stats.clutch) - matchClutch);
-  const totClutchAttempt = Math.max(0, num(stats.clutchAttempt) - num(m.clutchAttempt));
-
-  const oldRatingCount = averageCount(stats, "rating");
-  const hadRating = hasStatValue(m.rating);
-  const ratingCount = Math.max(0, oldRatingCount - (hadRating ? 1 : 0));
-  const rating = ratingCount > 0
-    ? (num(stats.rating) * oldRatingCount - (hadRating ? num(m.rating) : 0)) / ratingCount
-    : "";
-
-  const oldKastCount = averageCount(stats, "kast");
-  const hadKast = hasStatValue(m.kast);
-  const kastCount = Math.max(0, oldKastCount - (hadKast ? 1 : 0));
-  const kast = kastCount > 0
-    ? (normPct(stats.kast) * oldKastCount - (hadKast ? normPct(m.kast) : 0)) / kastCount
-    : "";
-
-  const acs = totMatch > 0 ? (num(stats.acs) * oldMatch - num(m.acs)) / totMatch : "";
-
-  return {
-    ...stats,
-    match: totMatch,
-    maps: totMaps,
-    round: totRound,
-    rating,
-    _ratingCount: ratingCount,
-    acs,
-    kast,
-    _kastCount: kastCount,
-    kd: totDeath > 0 ? totKill / totDeath : totKill,
-    kda: totDeath > 0 ? (totKill + totAssist) / totDeath : totKill + totAssist,
-    kill: totKill, death: totDeath, assist: totAssist,
-    multiKill: totMultiKill,
-    doubleKill: totDoubleKill, tripleKill: totTripleKill, quadKill: totQuadKill, ace: totAce,
-    fk: totFk, fd: totFd,
-    kdDiff: totKill - totDeath,
-    fkDiff: totFk - totFd,
-    clutch: totClutch,
-    clutch1v1: totClutch1v1, clutch1v2: totClutch1v2, clutch1v3: totClutch1v3,
-    clutch1v4: totClutch1v4, clutch1v5: totClutch1v5,
-    clutchAttempt: totClutchAttempt,
-    clutchPct: totClutchAttempt > 0 ? (totClutch / totClutchAttempt) * 100 : 0,
-  };
 }
 
 // ---------- style block (design system) ----------
@@ -1328,7 +510,7 @@ function StatsCorrectionModal({ player, onClose, onSave }) {
 
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
         <button className="vt-btn vt-cut-sm" onClick={onClose}>Annuler</button>
-        <button className="vt-btn vt-btn-primary vt-cut-sm" onClick={() => onSave({ ...player, stats: computeDerived(stats) })}>Enregistrer</button>
+        <button className="vt-btn vt-btn-primary vt-cut-sm" onClick={() => onSave({ ...player, stats: computeDerived(resetAverageCounts(stats, player.stats)) })}>Enregistrer</button>
       </div>
     </ModalShell>
   );
@@ -1367,16 +549,58 @@ function AddMatchModal({ player, onClose, onSave }) {
   );
 }
 
+// ---------- connexion (Supabase Auth) ----------
+function LoginModal({ onClose }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    const { error: authError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (authError) setError(authError.message);
+    else onClose();
+  };
+
+  return (
+    <ModalShell title="Connexion" onClose={onClose}>
+      <form onSubmit={submit}>
+        <Field label="Email">
+          <input type="email" className="vt-input" style={{ width: "100%" }} value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required />
+        </Field>
+        <Field label="Mot de passe">
+          <input type="password" className="vt-input" style={{ width: "100%" }} value={password} onChange={(e) => setPassword(e.target.value)} required />
+        </Field>
+        <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 10 }}>
+          Le compte se crée dans Supabase (Authentication → Users). Une fois les règles de
+          sécurité activées, seul un compte connecté peut modifier les données.
+        </div>
+        {error && <div style={{ color: "var(--red)", fontSize: 13, marginBottom: 10 }}>{error}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button type="button" className="vt-btn vt-cut-sm" onClick={onClose}>Annuler</button>
+          <button type="submit" className="vt-btn vt-btn-primary vt-cut-sm" disabled={busy}>{busy ? "Connexion…" : "Se connecter"}</button>
+        </div>
+      </form>
+    </ModalShell>
+  );
+}
+
 function ImportModal({ onClose, onImport }) {
   const [status, setStatus] = useState(null);
   const fileRef = useRef(null);
 
-  const handleFile = (file) => {
+  const handleFile = async (file) => {
     if (!file) return;
     setStatus("parsing");
     const ext = file.name.split(".").pop().toLowerCase();
 
     if (ext === "csv") {
+      // chargé seulement quand on importe : allège le premier affichage de l'appli
+      const { default: Papa } = await import("papaparse");
       Papa.parse(file, {
         header: true,
         skipEmptyLines: true,
@@ -1392,15 +616,16 @@ function ImportModal({ onClose, onImport }) {
 
     if (["ods", "xlsx", "xls"].includes(ext)) {
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
+          const XLSX = await import("xlsx");
           const wb = XLSX.read(e.target.result, { type: "array" });
           const sheet = wb.Sheets[wb.SheetNames[0]];
           const raw = XLSX.utils.sheet_to_json(sheet, { defval: "" });
           const rows = raw.map(mapRow).filter((r) => r.name);
           onImport(rows);
           setStatus({ ok: true, count: rows.length });
-        } catch (err) {
+        } catch {
           setStatus({ ok: false });
         }
       };
@@ -1455,160 +680,6 @@ function PlayerSortHeader({ sortKey, sortDir, onClick }) {
 }
 
 
-// ---------- classement / records filters ----------
-const DEFAULT_DATA_FILTERS = {
-  minRounds: "",
-  types: { Split: true, Masters: true, Champions: true },
-  year: "all",
-  tournamentId: "all",
-  team: "all",
-};
-
-function tournamentYear(tournament) {
-  const raw = String(tournament?.date || "").trim();
-  const match = raw.match(/^(\d{4})/);
-  return match ? match[1] : "";
-}
-
-function namedTypeFilterIsDefault(filters) {
-  return ["Split", "Masters", "Champions"].every((type) => filters.types?.[type] !== false);
-}
-
-function hasScopedDataFilter(filters) {
-  return !namedTypeFilterIsDefault(filters)
-    || filters.year !== "all"
-    || filters.tournamentId !== "all"
-    || filters.team !== "all";
-}
-
-function tournamentPassesDataFilters(tournament, filters) {
-  if (!namedTypeFilterIsDefault(filters) && !filters.types?.[tournament.type]) return false;
-  if (filters.year !== "all" && tournamentYear(tournament) !== filters.year) return false;
-  if (filters.tournamentId !== "all" && tournament.id !== filters.tournamentId) return false;
-  return true;
-}
-
-function normalizedTeamName(name) {
-  return String(name || "").trim().toLowerCase();
-}
-
-function teamIdsMatchingFilter(tournament, filters) {
-  if (filters.team === "all") return [];
-  const wanted = normalizedTeamName(filters.team);
-  return (tournament.teams || [])
-    .filter((team) => normalizedTeamName(team.name) === wanted)
-    .map((team) => team.id);
-}
-
-function filterTournamentScope(tournaments, filters, appliedOnly = false) {
-  return (tournaments || [])
-    .filter((t) => tournamentPassesDataFilters(t, filters))
-    .map((t) => {
-      const selectedTeamIds = teamIdsMatchingFilter(t, filters);
-      const matches = (t.matches || []).filter((m) => {
-        if (appliedOnly && !m.appliedToStats) return false;
-        if (filters.team !== "all" && !selectedTeamIds.includes(m.teamAId) && !selectedTeamIds.includes(m.teamBId)) return false;
-        return true;
-      });
-      return { ...t, matches };
-    })
-    .filter((t) => t.matches.length > 0);
-}
-
-function playerIdsForSelectedTeam(tournament, filters) {
-  if (filters.team === "all") return null;
-  const ids = new Set();
-  const wanted = normalizedTeamName(filters.team);
-  (tournament.teams || []).forEach((team) => {
-    if (normalizedTeamName(team.name) === wanted) {
-      (team.playerIds || []).forEach((id) => ids.add(id));
-    }
-  });
-  return ids;
-}
-
-function roundsByPlayerInScope(tournaments, filters) {
-  const totals = new Map();
-  (tournaments || []).forEach((t) => {
-    const teamPlayerIds = playerIdsForSelectedTeam(t, filters);
-    (t.matches || []).forEach((m) => {
-      const fallbackRounds = (m.mapScores || []).reduce((sum, score) => sum + num(score.a) + num(score.b), 0);
-      Object.entries(m.stats || {}).forEach(([playerId, vals]) => {
-        if (teamPlayerIds && !teamPlayerIds.has(playerId)) return;
-        const rounds = hasStatValue(vals?.round) ? num(vals.round) : fallbackRounds;
-        totals.set(playerId, (totals.get(playerId) || 0) + rounds);
-      });
-    });
-  });
-  return totals;
-}
-
-function eligiblePlayerIdsForFilters(tournaments, filters) {
-  const totals = roundsByPlayerInScope(tournaments, filters);
-  const minimum = Math.max(0, num(filters.minRounds));
-  return new Set([...totals.entries()].filter(([, rounds]) => rounds >= minimum).map(([playerId]) => playerId));
-}
-
-function trimTournamentStatsForFilters(tournaments, filters, eligibleIds = null) {
-  return (tournaments || []).map((t) => {
-    const teamPlayerIds = playerIdsForSelectedTeam(t, filters);
-    return {
-      ...t,
-      matches: (t.matches || []).map((m) => ({
-        ...m,
-        stats: Object.fromEntries(
-          Object.entries(m.stats || {}).filter(([playerId]) => {
-            if (teamPlayerIds && !teamPlayerIds.has(playerId)) return false;
-            if (eligibleIds && !eligibleIds.has(playerId)) return false;
-            return true;
-          })
-        ),
-      })),
-    };
-  });
-}
-
-function buildFilteredLeaderboardPlayers(players, tournaments, filters) {
-  const minimum = Math.max(0, num(filters.minRounds));
-
-  // With only a rounds threshold active, keep the existing global career totals exactly as stored.
-  if (!hasScopedDataFilter(filters)) {
-    return players.filter((p) => num(p.stats.round) >= minimum);
-  }
-
-  // Once a tournament/year/type/team filter is active, rebuild the ranking from the matching
-  // tournament matches so Rating/KAST/KD/etc. truly correspond to that selection.
-  const scopedFullMatches = filterTournamentScope(tournaments, filters, true);
-  const scopedRows = trimTournamentStatsForFilters(scopedFullMatches, filters);
-  const totals = new Map();
-
-  scopedRows.forEach((t) => {
-    (t.matches || []).forEach((m) => {
-      Object.entries(m.stats || {}).forEach(([playerId, row]) => {
-        const hasValue = Object.values(row || {}).some((v) => v !== "" && v !== undefined && v !== null);
-        if (!hasValue) return;
-        const previous = totals.get(playerId) || emptyStats();
-        totals.set(playerId, applyMatchToStats(previous, row));
-      });
-    });
-  });
-
-  // MVP/MJ remain calculated from the complete match, then are assigned only to players that
-  // survive the selected team/round filters.
-  const scopedMvpMj = computeMvpMjCounts(scopedFullMatches);
-
-  return players
-    .filter((p) => totals.has(p.id))
-    .map((p) => ({
-      ...p,
-      stats: {
-        ...totals.get(p.id),
-        mvp: scopedMvpMj[p.id]?.mvp || 0,
-        mj: scopedMvpMj[p.id]?.mj || 0,
-      },
-    }))
-    .filter((p) => num(p.stats.round) >= minimum);
-}
 
 function DataFiltersPanel({ filters, onChange, tournaments }) {
   const years = useMemo(() => [...new Set((tournaments || []).map(tournamentYear).filter(Boolean))].sort((a, b) => b.localeCompare(a)), [tournaments]);
@@ -1767,7 +838,7 @@ function Leaderboard({ players, onOpenPlayer, query, sortKey, sortDir, onSort, t
 }
 
 // ---------- player detail ----------
-function PlayerDetail({ player, players, tournaments, teamLogos, onSetLogo, onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
+function PlayerDetail({ player, players, tournaments, teamLogos, onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
   const [tab, setTab] = useState("profile");
   const [compareOpen, setCompareOpen] = useState(false);
   const history = [...(player.teamHistory || [])].reverse();
@@ -1796,7 +867,7 @@ function PlayerDetail({ player, players, tournaments, teamLogos, onSetLogo, onAd
             <button className="vt-btn vt-cut-sm" onClick={() => setCompareOpen(true)}><GitCompare size={14} /> Comparer</button>
             <button className="vt-btn vt-cut-sm" onClick={onEditProfile}><UserCog size={14} /> Profil</button>
             <button className="vt-btn vt-cut-sm" onClick={onCorrectStats}><Pencil size={14} /> Corriger</button>
-            <button className="vt-btn vt-cut-sm" onClick={onDeletePlayer}><Trash2 size={14} /></button>
+            <button className="vt-btn vt-cut-sm" onClick={onDeletePlayer} title="Supprimer le joueur"><Trash2 size={14} /></button>
           </div>
         </div>
       </div>
@@ -1915,7 +986,7 @@ function PlayerDetail({ player, players, tournaments, teamLogos, onSetLogo, onAd
 
 // ==================== tournaments ====================
 
-function TeamModal({ tournament, team, players, onClose, onSave, onCreatePlayer }) {
+function TeamModal({ team, players, onClose, onSave, onCreatePlayer }) {
   const isEdit = !!team;
   const [name, setName] = useState(team?.name || "");
   const [playerIds, setPlayerIds] = useState(team?.playerIds || []);
@@ -2508,7 +1579,7 @@ function TournamentDetail({ tournament, players, teamLogos, onBack, onAddTeam, o
                   </div>
                   {m.mapScores && m.mapScores.length > 0 && (
                     <div className="vt-mono" style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 3 }}>
-                      {m.mapScores.filter((s) => s.a !== "" || s.b !== "").map((s, si) => `${s.a || 0}-${s.b || 0}`).join(" · ")}
+                      {m.mapScores.filter((s) => s.a !== "" || s.b !== "").map((s) => `${s.a || 0}-${s.b || 0}`).join(" · ")}
                     </div>
                   )}
                   <div style={{ marginTop: 4 }}>
@@ -3030,6 +2101,15 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
   );
 }
 
+// list views keep their remembered scroll position; detail views always open at the top
+const LIST_VIEWS = new Set(["leaderboard", "tournaments", "records", "teams"]);
+
+// players whose object changed between two versions of the list — only those need saving
+function changedPlayers(before, after) {
+  const previous = new Map(before.map((p) => [p.id, p]));
+  return after.filter((p) => previous.get(p.id) !== p);
+}
+
 // ---------- app ----------
 export default function App() {
   const [players, setPlayers] = useState([]);
@@ -3038,6 +2118,7 @@ export default function App() {
   const [hiddenTeams, setHiddenTeams] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [session, setSession] = useState(null);
   const [view, setView] = useState({ name: "leaderboard" });
   const [query, setQuery] = useState("");
   const [modal, setModal] = useState(null); // 'addPlayer' | 'editProfile' | 'correctStats' | 'addMatch' | 'import' | 'createTournament' | 'addTeam' | 'editTeam' | 'addTournamentMatch' | 'finishTournament' | null
@@ -3046,18 +2127,32 @@ export default function App() {
   const [sortKey, setSortKey] = useState("rating");
   const [sortDir, setSortDir] = useState("desc");
   const [dataFilters, setDataFilters] = useState(() => ({ ...DEFAULT_DATA_FILTERS, types: { ...DEFAULT_DATA_FILTERS.types } }));
-  const scrollPositions = useRef({ leaderboard: 0, tournaments: 0 });
+  const scrollPositions = useRef({ leaderboard: 0, tournaments: 0, records: 0, teams: 0 });
 
   // All writes are optimistic: the UI updates immediately, then Supabase is updated in the
-  // background. If a write fails, the red banner tells you that a reload may lose that change.
-  const persist = (promise, context = "sauvegarde") => {
-    Promise.resolve(promise)
-      .then(() => setSaveError(""))
+  // background. Writes run one after another (never in parallel) so an older save can't land
+  // after a newer one and overwrite it. A failure stays on screen until it is dismissed — a
+  // later successful save does not hide it, because the failed change is still missing.
+  const writeQueue = useRef(Promise.resolve());
+  const persist = (write, context = "sauvegarde") => {
+    writeQueue.current = writeQueue.current
+      .then(write)
       .catch((error) => {
         console.error(`[ValTrack] Échec ${context}:`, error);
-        setSaveError(`Échec de ${context} dans Supabase : ${error?.message || String(error)}`);
+        const denied = error?.code === "42501" || /row-level security/i.test(error?.message || "");
+        setSaveError(denied
+          ? `Modification refusée (${context}) : connecte-toi pour modifier les données. Recharge la page pour retrouver l'état enregistré.`
+          : `Échec de ${context} dans Supabase : ${error?.message || String(error)}. Recharge la page pour vérifier ce qui a été enregistré.`);
       });
   };
+
+  // session Supabase (connexion facultative tant que les règles RLS ne l'exigent pas)
+  useEffect(() => {
+    if (!supabase) return undefined;
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
+    return () => data.subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -3122,7 +2217,6 @@ export default function App() {
 
   // list views ("leaderboard", "tournaments") keep their own remembered scroll position;
   // detail views ("player", "tournament") always open at the top
-  const LIST_VIEWS = new Set(["leaderboard", "tournaments", "records", "teams"]);
   useEffect(() => {
     const id = requestAnimationFrame(() => {
       if (LIST_VIEWS.has(view.name)) window.scrollTo(0, scrollPositions.current[view.name] || 0);
@@ -3138,6 +2232,10 @@ export default function App() {
   const openTournament = (id) => {
     scrollPositions.current.tournaments = window.scrollY;
     setView({ name: "tournament", id });
+  };
+  const openTeam = (teamName) => {
+    scrollPositions.current.teams = window.scrollY;
+    setView({ name: "team", key: normalizedTeamName(teamName) });
   };
   const backToLeaderboard = () => setView({ name: "leaderboard" });
   const backToTournaments = () => setView({ name: "tournaments" });
@@ -3159,7 +2257,7 @@ export default function App() {
 
     setTeamLogos((prev) => ({ ...prev, [key]: previewUrl }));
 
-    persist(
+    persist(() =>
       setTeamLogoDb(key, file).then((publicUrl) => {
         setTeamLogos((prev) => ({ ...prev, [key]: publicUrl }));
         if (file instanceof Blob && previewUrl?.startsWith("blob:")) {
@@ -3174,7 +2272,7 @@ export default function App() {
     const key = teamName.trim().toLowerCase();
     const willBeHidden = !hiddenTeams.includes(key);
     setHiddenTeams((prev) => willBeHidden ? [...prev, key] : prev.filter((x) => x !== key));
-    persist(setHiddenTeamDb(key, willBeHidden), "la visibilité de l'équipe");
+    persist(() => setHiddenTeamDb(key, willBeHidden), "la visibilité de l'équipe");
   };
 
   const upsertPlayer = (p) => {
@@ -3185,40 +2283,39 @@ export default function App() {
       copy[idx] = p;
       return copy;
     });
-    persist(upsertPlayerDb(p), `la sauvegarde de ${p.name}`);
+    persist(() => upsertPlayerDb(p), `la sauvegarde de ${p.name}`);
     setModal(null);
   };
 
   // silent update (no modal to close) — used for trophies, added inline on the profile page
   const updatePlayer = (p) => {
     setPlayers((prev) => prev.map((x) => (x.id === p.id ? p : x)));
-    persist(upsertPlayerDb(p), `la sauvegarde de ${p.name}`);
+    persist(() => upsertPlayerDb(p), `la sauvegarde de ${p.name}`);
   };
 
   // Must stay synchronous because TeamModal immediately needs the returned player's id.
   const quickCreatePlayer = (name) => {
     const p = { id: uid(), name, nationality: "", teamHistory: [], trophies: [], stats: emptyStats() };
     setPlayers((prev) => [...prev, p]);
-    persist(upsertPlayerDb(p), `la création de ${name}`);
+    persist(() => upsertPlayerDb(p), `la création de ${name}`);
     return p;
   };
 
   const deletePlayer = (playerId) => {
     setPlayers((prev) => prev.filter((p) => p.id !== playerId));
-    persist(deletePlayerDb(playerId), "la suppression du joueur");
+    persist(() => deletePlayerDb(playerId), "la suppression du joueur");
     setView({ name: "leaderboard" });
   };
 
   const importRows = (rows) => {
-    const byName = new Map(players.map((p) => [
-      p.name.toLowerCase(),
-      { ...p, stats: { ...p.stats }, teamHistory: [...(p.teamHistory || [])] },
-    ]));
+    const byName = new Map(players.map((p) => [p.name.toLowerCase(), p]));
 
     rows.forEach((row) => {
       const key = row.name.toLowerCase();
-      let player = byName.get(key);
-      if (!player) player = { id: uid(), name: row.name, nationality: "", teamHistory: [], trophies: [], stats: emptyStats() };
+      const existing = byName.get(key);
+      const player = existing
+        ? { ...existing, stats: { ...existing.stats }, teamHistory: [...(existing.teamHistory || [])] }
+        : { id: uid(), name: row.name, nationality: "", teamHistory: [], trophies: [], stats: emptyStats() };
 
       if (row.team && currentTeam(player) !== row.team) {
         player.teamHistory = [...player.teamHistory, { id: uid(), team: row.team, since: new Date().toISOString().slice(0, 10) }];
@@ -3232,13 +2329,13 @@ export default function App() {
       STAT_FIELDS.forEach((f) => {
         if (row[f.key] !== undefined && row[f.key] !== "") player.stats[f.key] = row[f.key];
       });
-      player.stats = computeDerived(player.stats);
+      player.stats = computeDerived(resetAverageCounts(player.stats, existing?.stats));
       byName.set(key, player);
     });
 
     const nextPlayers = Array.from(byName.values());
     setPlayers(nextPlayers);
-    persist(upsertPlayersDb(nextPlayers), "l'import des joueurs");
+    persist(() => upsertPlayersDb(changedPlayers(players, nextPlayers)), "l'import des joueurs");
     setModal(null);
   };
 
@@ -3251,7 +2348,7 @@ export default function App() {
       copy[idx] = t;
       return copy;
     });
-    persist(upsertTournamentDb(t), `la sauvegarde du tournoi ${t.name}`);
+    persist(() => upsertTournamentDb(t), `la sauvegarde du tournoi ${t.name}`);
   };
 
   const saveTeam = (tournamentId, team) => {
@@ -3261,7 +2358,7 @@ export default function App() {
       const teams = idx === -1 ? [...t.teams, team] : t.teams.map((x) => (x.id === team.id ? team : x));
       return { ...t, teams };
     }));
-    persist(upsertTeamDb(tournamentId, team), `la sauvegarde de l'équipe ${team.name}`);
+    persist(() => upsertTeamDb(tournamentId, team), `la sauvegarde de l'équipe ${team.name}`);
     setModal(null);
     setEditingTeam(null);
   };
@@ -3276,7 +2373,7 @@ export default function App() {
       const matches = exists ? t.matches.map((m) => (m.id === match.id ? match : m)) : [...t.matches, match];
       return { ...t, matches };
     }));
-    persist(upsertMatchDb(tournamentId, match), `la sauvegarde du match ${match.label}`);
+    persist(() => upsertMatchDb(tournamentId, match), `la sauvegarde du match ${match.label}`);
 
     // Nouveau match appliqué : on ajoute ses stats une seule fois.
     // Match déjà appliqué puis modifié : on retire l'ancienne version, puis on ajoute la nouvelle.
@@ -3289,7 +2386,7 @@ export default function App() {
         return { ...p, prevStats: p.stats, stats: applyMatchToStats(p.stats, rowStats) };
       });
       setPlayers(nextPlayers);
-      persist(upsertPlayersDb(nextPlayers), "la mise à jour des statistiques joueurs");
+      persist(() => upsertPlayersDb(changedPlayers(players, nextPlayers)), "la mise à jour des statistiques joueurs");
     } else if (wasApplied && previousMatch) {
       const nextPlayers = players.map((p) => {
         const oldRow = previousMatch.stats?.[p.id];
@@ -3304,7 +2401,7 @@ export default function App() {
         return { ...p, prevStats: p.stats, stats: corrected };
       });
       setPlayers(nextPlayers);
-      persist(upsertPlayersDb(nextPlayers), "la correction des statistiques joueurs après modification du match");
+      persist(() => upsertPlayersDb(changedPlayers(players, nextPlayers)), "la correction des statistiques joueurs après modification du match");
     }
 
     setModal(null);
@@ -3324,12 +2421,12 @@ export default function App() {
       return { ...p, prevStats: p.stats, stats: applyMatchToStats(p.stats, rowStats) };
     });
     setPlayers(nextPlayers);
-    persist(upsertPlayersDb(nextPlayers), "la mise à jour des statistiques joueurs");
+    persist(() => upsertPlayersDb(changedPlayers(players, nextPlayers)), "la mise à jour des statistiques joueurs");
 
     setTournaments((prev) => prev.map((t) => (
       t.id === tournamentId ? { ...t, matches: t.matches.map((m) => (m.id === matchId ? { ...m, appliedToStats: true } : m)) } : t
     )));
-    persist(setMatchAppliedDb(matchId, true), "l'application du match au classement");
+    persist(() => setMatchAppliedDb(matchId, true), "l'application du match au classement");
   };
 
   const finishTournament = (tournamentId, winnerTeamId) => {
@@ -3339,7 +2436,7 @@ export default function App() {
     const updatedTournament = { ...tournament, winnerTeamId, finished: true };
 
     setTournaments((prev) => prev.map((t) => (t.id === tournamentId ? updatedTournament : t)));
-    persist(upsertTournamentDb(updatedTournament), `la clôture du tournoi ${tournament.name}`);
+    persist(() => upsertTournamentDb(updatedTournament), `la clôture du tournoi ${tournament.name}`);
 
     if (winnerTeam) {
       const trophy = { id: uid(), type: tournament.type, detail: tournament.name, tournamentId };
@@ -3347,7 +2444,7 @@ export default function App() {
         winnerTeam.playerIds.includes(p.id) ? { ...p, trophies: [...(p.trophies || []), trophy] } : p
       ));
       setPlayers(nextPlayers);
-      persist(upsertPlayersDb(nextPlayers), "l'attribution des trophées");
+      persist(() => upsertPlayersDb(changedPlayers(players, nextPlayers)), "l'attribution des trophées");
     }
     setModal(null);
   };
@@ -3362,7 +2459,7 @@ export default function App() {
     const updatedTournament = { ...tournament, ...updates };
 
     setTournaments((prev) => prev.map((t) => (t.id === tournamentId ? updatedTournament : t)));
-    persist(upsertTournamentDb(updatedTournament), `la modification du tournoi ${tournament.name}`);
+    persist(() => upsertTournamentDb(updatedTournament), `la modification du tournoi ${tournament.name}`);
 
     if (tournament.finished) {
       let nextPlayers = players;
@@ -3384,7 +2481,7 @@ export default function App() {
 
       if (nextPlayers !== players) {
         setPlayers(nextPlayers);
-        persist(upsertPlayersDb(nextPlayers), "la mise à jour des trophées");
+        persist(() => upsertPlayersDb(changedPlayers(players, nextPlayers)), "la mise à jour des trophées");
       }
     }
     setModal(null);
@@ -3399,7 +2496,7 @@ export default function App() {
     setTournaments((prev) => prev.map((t) => (
       t.id !== tournamentId ? t : { ...t, teams: t.teams.map((x) => (x.id === teamId ? updatedTeam : x)) }
     )));
-    persist(upsertTeamDb(tournamentId, updatedTeam), `la mise à jour de l'équipe ${team.name}`);
+    persist(() => upsertTeamDb(tournamentId, updatedTeam), `la mise à jour de l'équipe ${team.name}`);
   };
 
   // MVP/MJ are fully derived from every recorded match (applied or not) — never stored,
@@ -3435,12 +2532,25 @@ export default function App() {
               <div className="vt-label" style={{ color: "var(--text-dim)" }}>Registre de performances</div>
             </div>
           </div>
-          {!loaded && <Loader2 className="vt-mono" size={18} style={{ animation: "spin 1s linear infinite", color: "var(--text-dim)" }} />}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {!loaded && <Loader2 className="vt-mono" size={18} style={{ animation: "spin 1s linear infinite", color: "var(--text-dim)" }} />}
+            {supabase && (session ? (
+              <>
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{session.user?.email}</span>
+                <button className="vt-btn vt-cut-sm" style={{ padding: "6px 10px", fontSize: 11 }} onClick={() => supabase.auth.signOut()}>Déconnexion</button>
+              </>
+            ) : (
+              <button className="vt-btn vt-cut-sm" style={{ padding: "6px 10px", fontSize: 11 }} onClick={() => setModal("login")}>Connexion</button>
+            ))}
+          </div>
         </header>
 
         {saveError && (
           <div className="vt-cut-sm" style={{ background: "var(--red-dim)", border: "1px solid var(--red)", color: "var(--red)", padding: "10px 14px", fontSize: 13, marginBottom: 18 }}>
-            ⚠ {saveError}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+              <span>⚠ {saveError}</span>
+              <button onClick={() => setSaveError("")} title="Masquer" style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", padding: 0, display: "flex" }}><X size={14} /></button>
+            </div>
           </div>
         )}
 
@@ -3468,7 +2578,7 @@ export default function App() {
           </button>
           <button
             className="vt-btn vt-cut-sm"
-            style={{ background: view.name === "teams" ? "var(--panel-raised)" : "var(--panel)", borderColor: view.name === "teams" ? "var(--steel)" : "var(--line)" }}
+            style={{ background: (view.name === "teams" || view.name === "team") ? "var(--panel-raised)" : "var(--panel)", borderColor: (view.name === "teams" || view.name === "team") ? "var(--steel)" : "var(--line)" }}
             onClick={() => setView({ name: "teams" })}
           >
             <Shield size={14} /> Équipes
@@ -3476,7 +2586,19 @@ export default function App() {
         </div>
 
         {view.name === "records" && <RecordsView tournaments={tournaments} players={players} filters={dataFilters} onFiltersChange={setDataFilters} />}
-        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} />}
+        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
+        {view.name === "team" && (
+          <TeamProfile
+            nameKey={view.key}
+            tournaments={tournaments}
+            players={players}
+            teamLogos={teamLogos}
+            hiddenTeams={hiddenTeams}
+            onToggleHidden={toggleHiddenTeam}
+            onBack={() => setView({ name: "teams" })}
+            onOpenPlayer={(id) => setView({ name: "player", id })}
+          />
+        )}
 
         {view.name === "leaderboard" && (
           <>
@@ -3512,12 +2634,13 @@ export default function App() {
             players={displayPlayers}
             tournaments={tournaments}
             teamLogos={teamLogos}
-            onSetLogo={setLogo}
             onBack={backToLeaderboard}
             onAddMatch={() => setModal("addMatch")}
             onEditProfile={() => setModal("editProfile")}
             onCorrectStats={() => setModal("correctStats")}
-            onDeletePlayer={() => deletePlayer(activePlayer.id)}
+            onDeletePlayer={() => {
+              if (window.confirm(`Supprimer définitivement ${activePlayer.name} ? Cette action est irréversible.`)) deletePlayer(activePlayer.id);
+            }}
             onUpdate={updatePlayer}
           />
         )}
@@ -3553,6 +2676,7 @@ export default function App() {
       {modal === "editProfile" && activePlayer && <ProfileEditModal player={rawActivePlayer} teamLogos={teamLogos} onSetLogo={setLogo} onClose={() => setModal(null)} onSave={upsertPlayer} />}
       {modal === "correctStats" && activePlayer && <StatsCorrectionModal player={rawActivePlayer} onClose={() => setModal(null)} onSave={upsertPlayer} />}
       {modal === "addMatch" && activePlayer && <AddMatchModal player={rawActivePlayer} onClose={() => setModal(null)} onSave={upsertPlayer} />}
+      {modal === "login" && <LoginModal onClose={() => setModal(null)} />}
       {modal === "import" && <ImportModal onClose={() => setModal(null)} onImport={importRows} />}
 
       {modal === "createTournament" && <CreateTournamentModal onClose={() => setModal(null)} onSave={(t) => { upsertTournament(t); setModal(null); setView({ name: "tournament", id: t.id }); }} />}
