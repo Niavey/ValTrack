@@ -67,9 +67,10 @@ export const STAT_FIELDS = [
   { key: "clutchPct", label: "Clutch %", decimals: 0, suffix: "%" },
   { key: "mvp", label: "MVP", decimals: 0 },
   { key: "mj", label: "MJ", decimals: 0 },
+  { key: "elo", label: "Elo", decimals: 0 },
 ];
 
-export const HEADLINE_KEYS = ["rating", "acs", "kd", "kda", "kast", "clutchPct", "mvp", "mj"];
+export const HEADLINE_KEYS = ["elo", "rating", "acs", "kd", "kda", "kast", "clutchPct", "mvp", "mj"];
 
 // single-match performance records — no Match/Maps/Round, those aren't personal records
 export const RECORD_FIELDS = [
@@ -123,7 +124,7 @@ export const TROPHY_RANK = { Split: 1, Masters: 2, Champions: 3, Autre: 0 };
 export const TROPHY_COLOR = { Split: "#8792A0", Masters: "#C77B4B", Champions: "#E8B95E", Autre: "#8792A0" };
 
 // these are never typed by hand — always computed from the raw counts
-export const DERIVED_KEYS = new Set(["kd", "kda", "kdDiff", "fkDiff", "clutchPct", "mvp", "mj"]);
+export const DERIVED_KEYS = new Set(["kd", "kda", "kdDiff", "fkDiff", "clutchPct", "mvp", "mj", "elo"]);
 export const FORM_INPUT_FIELDS = STAT_FIELDS.filter((f) => !DERIVED_KEYS.has(f.key));
 
 export function hasEnteredDetail(stats, keys) {
@@ -220,7 +221,7 @@ export function fmtStat(v, field) {
 }
 
 // fields where "did it go up or down" isn't meaningful — they only ever accumulate
-export const NO_EVOLUTION_KEYS = new Set(["match", "maps", "round"]);
+export const NO_EVOLUTION_KEYS = new Set(["match", "maps", "round", "elo"]);
 
 // compares the DISPLAYED (rounded) value against the snapshot taken just before the last
 // match was added — green if it rose, red if it fell, null (default color) if unchanged or unknown

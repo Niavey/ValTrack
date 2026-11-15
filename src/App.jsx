@@ -12,7 +12,8 @@ import {
   setTeamLogoDb, setHiddenTeamDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
 } from "./valtrackDb";
 import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
-import { ELO_MAX, computeTeamElo, getTeamProfile } from "./domain/elo.js";
+import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo, getTeamProfile } from "./domain/elo.js";
+import { computeParticipation, resolveLineups, compactLineups, isPlayedMap, substitutionSummary } from "./domain/participation.js";
 import { DEFAULT_DATA_FILTERS, tournamentYear, normalizedTeamName, filterTournamentScope, eligiblePlayerIdsForFilters, trimTournamentStatsForFilters, buildFilteredLeaderboardPlayers } from "./domain/filters.js";
 import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
 
@@ -837,8 +838,43 @@ function Leaderboard({ players, onOpenPlayer, query, sortKey, sortDir, onSort, t
   );
 }
 
+// ---------- Elo individuel : derniers changements ----------
+function EloHistory({ history }) {
+  if (!history.length) return null;
+  const recent = [...history].reverse().slice(0, 10);
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div className="vt-label" style={{ marginBottom: 8 }}>Historique Elo</div>
+      <div className="vt-panel vt-cut" style={{ padding: 4 }}>
+        {recent.map((h, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 16px", borderBottom: i < recent.length - 1 ? "1px solid var(--line)" : "none" }}>
+            <div style={{ fontSize: 13 }}>
+              {h.type === "trophy" ? (
+                <span style={{ color: TROPHY_COLOR[h.tournamentType] || TROPHY_COLOR.Autre }}>
+                  <Trophy size={12} style={{ display: "inline", marginRight: 5 }} />{h.tournamentType} — {h.tournamentName} ({h.teamName})
+                </span>
+              ) : (
+                <>
+                  <span style={{ color: h.result === "W" ? "var(--green)" : "var(--red)", fontWeight: 700, marginRight: 6 }}>{h.result}</span>
+                  {h.teamName} vs {h.opponentName}
+                  <span style={{ color: "var(--text-dim)" }}> — {h.tournamentName} · {h.matchLabel}</span>
+                  {h.participation < 1 && <span style={{ color: "var(--text-dim)", fontSize: 11 }}> · participation ×{h.participation.toFixed(2)}</span>}
+                </>
+              )}
+            </div>
+            <div className="vt-mono" style={{ display: "flex", gap: 12, flexShrink: 0, fontSize: 12 }}>
+              <span style={{ fontWeight: 700, color: h.delta >= 0 ? "var(--green)" : "var(--red)" }}>{h.delta >= 0 ? "+" : ""}{Math.round(h.delta)}</span>
+              <span style={{ color: "var(--text-dim)", width: 40, textAlign: "right" }}>{Math.round(h.eloAfter)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---------- player detail ----------
-function PlayerDetail({ player, players, tournaments, teamLogos, onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
+function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = [], onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
   const [tab, setTab] = useState("profile");
   const [compareOpen, setCompareOpen] = useState(false);
   const history = [...(player.teamHistory || [])].reverse();
@@ -909,6 +945,8 @@ function PlayerDetail({ player, players, tournaments, teamLogos, onAddMatch, onE
           </div>
 
           <TrophySection player={player} onUpdate={onUpdate} />
+
+          <EloHistory history={eloHistory} />
 
           <div className="vt-label" style={{ marginBottom: 8 }}>Autres stats</div>
           <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
@@ -1155,12 +1193,12 @@ function EditTournamentModal({ tournament, onClose, onSave }) {
 // stats entered per player, excluding maps/round which are now derived once from the map scores
 const TOURNAMENT_PLAYER_FIELDS = MATCH_INPUT_FIELDS.filter((k) => k !== "maps" && k !== "round");
 
-function RosterPicker({ team, players, selected, onToggle }) {
+function RosterPicker({ team, players, selected, onToggle, hint }) {
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 6 }}>
-        Effectif de {team.playerIds.length} joueurs — sélectionne ceux qui ont joué ce match
-        (coche plus de 5 noms s'il y a eu des remplacements).
+        {hint ?? <>Effectif de {team.playerIds.length} joueurs — sélectionne les 5 qui commencent le match.
+        Les remplacements se règlent ensuite map par map (bouton « Compo »).</>}
       </div>
       <div className="vt-panel vt-cut-sm" style={{ display: "flex", flexWrap: "wrap", gap: 4, padding: 8 }}>
         {team.playerIds.map((id) => {
@@ -1197,7 +1235,6 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
   const [teamAId, setTeamAId] = useState(existingMatch?.teamAId || tournament.teams[0]?.id || "");
   const [teamBId, setTeamBId] = useState(existingMatch?.teamBId || tournament.teams[1]?.id || "");
   const [winnerTeamId, setWinnerTeamId] = useState(existingMatch?.winnerTeamId || "");
-  const [mapScores, setMapScores] = useState(existingMatch?.mapScores?.length ? existingMatch.mapScores : [{ a: "", b: "" }]);
   const [applyToStats, setApplyToStats] = useState(isEdit ? wasApplied : true);
   const [saveError, setSaveError] = useState("");
 
@@ -1206,9 +1243,22 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
   const aExceeds = (teamA?.playerIds.length || 0) > 5;
   const bExceeds = (teamB?.playerIds.length || 0) > 5;
 
-  const existingIdsInTeam = (team) => (existingMatch ? Object.keys(existingMatch.stats).filter((id) => team?.playerIds.includes(id)) : []);
-  const [participantsA, setParticipantsA] = useState(() => existingIdsInTeam(teamA));
-  const [participantsB, setParticipantsB] = useState(() => existingIdsInTeam(teamB));
+  // Composition de départ : les 5 qui commencent. Les maps suivantes la reprennent, sauf
+  // remplacement saisi sur une map (qui vaut alors aussi pour les maps d'après).
+  const defaultStarters = (team) => ((team?.playerIds.length || 0) <= 5 ? (team?.playerIds || []) : []);
+  const initialStarters = (team, side) => {
+    if (!existingMatch) return defaultStarters(team);
+    const first = (existingMatch.mapScores || []).find((m) => Array.isArray(m[`lineup${side}`]));
+    if (first) return first[`lineup${side}`];
+    // ancien match : les joueurs ayant des stats
+    return Object.keys(existingMatch.stats || {}).filter((id) => team?.playerIds.includes(id));
+  };
+  const [startersA, setStartersA] = useState(() => initialStarters(teamA, "A"));
+  const [startersB, setStartersB] = useState(() => initialStarters(teamB, "B"));
+  const [mapScores, setMapScores] = useState(() => (existingMatch?.mapScores?.length
+    ? compactLineups(existingMatch.mapScores, initialStarters(teamA, "A"), initialStarters(teamB, "B"))
+    : [{ a: "", b: "" }]));
+  const [openLineup, setOpenLineup] = useState(null);
   const [rows, setRows] = useState(() => {
     if (!existingMatch) return {};
     const out = {};
@@ -1218,13 +1268,35 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
     return out;
   });
 
-  const rosterA = aExceeds ? participantsA : (teamA?.playerIds || []);
-  const rosterB = bExceeds ? participantsB : (teamB?.playerIds || []);
-  const rosterIds = Array.from(new Set([...rosterA, ...rosterB]));
-  const roster = rosterIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
+  const toggleId = (ids, id) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  const toggleA = (id) => setStartersA((ids) => toggleId(ids, id));
+  const toggleB = (id) => setStartersB((ids) => toggleId(ids, id));
 
-  const toggleA = (id) => setParticipantsA((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
-  const toggleB = (id) => setParticipantsB((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  // changer d'équipe remet à zéro la compo de ce camp (départ + remplacements par map)
+  const changeTeam = (side, id) => {
+    const team = tournament.teams.find((t) => t.id === id);
+    if (side === "A") { setTeamAId(id); setStartersA(defaultStarters(team)); }
+    else { setTeamBId(id); setStartersB(defaultStarters(team)); }
+    setMapScores((rows) => rows.map(({ [`lineup${side}`]: _drop, ...rest }) => rest));
+  };
+
+  const resolvedMaps = resolveLineups(mapScores, startersA, startersB);
+  const toggleMapLineup = (idx, side, id) => setMapScores((rows) => rows.map((r, i) => (
+    i === idx ? { ...r, [`lineup${side}`]: toggleId(resolvedMaps[idx][`lineup${side}`], id) } : r
+  )));
+  const resetMapLineup = (idx) => setMapScores((rows) => rows.map((r, i) => {
+    if (i !== idx) return r;
+    const { lineupA: _a, lineupB: _b, ...rest } = r;
+    return rest;
+  }));
+
+  // joueurs ayant joué au moins une map (ou la compo de départ tant qu'aucun score n'est saisi)
+  const playedResolved = resolvedMaps.filter(isPlayedMap);
+  const lineupMaps = playedResolved.length ? playedResolved : [{ lineupA: startersA, lineupB: startersB }];
+  const rosterIds = Array.from(new Set([...lineupMaps.flatMap((m) => m.lineupA), ...lineupMaps.flatMap((m) => m.lineupB)]));
+  const roster = rosterIds.map((id) => players.find((p) => p.id === id)).filter(Boolean);
+  const participation = computeParticipation({ mapScores: resolvedMaps, stats: {} }, teamA, teamB);
+  const nameOf = (id) => players.find((p) => p.id === id)?.name || "?";
 
   const setMapScore = (idx, side, value) => setMapScores((rows) => rows.map((r, i) => i === idx ? { ...r, [side]: value } : r));
   const addMapRow = () => setMapScores((rows) => [...rows, { a: "", b: "" }]);
@@ -1248,13 +1320,13 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
           <input className="vt-input" style={{ width: "100%" }} placeholder='ex : "Poule A - J1", "Demi-finale"' value={label} onChange={(e) => setLabel(e.target.value)} />
         </Field>
         <Field label="Équipe A">
-          <select className="vt-select" style={{ width: "100%" }} value={teamAId} onChange={(e) => { setTeamAId(e.target.value); setParticipantsA([]); }}>
+          <select className="vt-select" style={{ width: "100%" }} value={teamAId} onChange={(e) => changeTeam("A", e.target.value)}>
             <option value="">—</option>
             {tournament.teams.filter((t) => !t.eliminated || t.id === teamAId).map((t) => <option key={t.id} value={t.id}>{t.name}{t.eliminated ? " (éliminée)" : ""}</option>)}
           </select>
         </Field>
         <Field label="Équipe B">
-          <select className="vt-select" style={{ width: "100%" }} value={teamBId} onChange={(e) => { setTeamBId(e.target.value); setParticipantsB([]); }}>
+          <select className="vt-select" style={{ width: "100%" }} value={teamBId} onChange={(e) => changeTeam("B", e.target.value)}>
             <option value="">—</option>
             {tournament.teams.filter((t) => !t.eliminated || t.id === teamBId).map((t) => <option key={t.id} value={t.id}>{t.name}{t.eliminated ? " (éliminée)" : ""}</option>)}
           </select>
@@ -1263,8 +1335,8 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
 
       {teamA && teamB && (
         <>
-          {aExceeds && <RosterPicker team={teamA} players={players} selected={participantsA} onToggle={toggleA} />}
-          {bExceeds && <RosterPicker team={teamB} players={players} selected={participantsB} onToggle={toggleB} />}
+          {aExceeds && <RosterPicker team={teamA} players={players} selected={startersA} onToggle={toggleA} />}
+          {bExceeds && <RosterPicker team={teamB} players={players} selected={startersB} onToggle={toggleB} />}
 
           <Field label="Équipe gagnante de ce match (facultatif)">
             <select className="vt-select" style={{ width: "100%" }} value={winnerTeamId} onChange={(e) => setWinnerTeamId(e.target.value)}>
@@ -1278,8 +1350,19 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
 
       <div className="vt-label" style={{ margin: "14px 0 8px" }}>Score par map</div>
       <div className="vt-input-flow" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {mapScores.map((m, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {mapScores.map((m, i) => {
+          const resolved = resolvedMaps[i];
+          const prev = i === 0 ? { lineupA: startersA, lineupB: startersB } : resolvedMaps[i - 1];
+          const changes = [
+            substitutionSummary(prev.lineupA, resolved.lineupA, nameOf),
+            substitutionSummary(prev.lineupB, resolved.lineupB, nameOf),
+          ].filter(Boolean).join(" · ");
+          const sizeWarning = isPlayedMap(m) && teamA && teamB && (resolved.lineupA.length !== 5 || resolved.lineupB.length !== 5)
+            ? `${resolved.lineupA.length} v ${resolved.lineupB.length} joueurs` : "";
+          const hasOverride = Array.isArray(m.lineupA) || Array.isArray(m.lineupB);
+          return (
+          <div key={i}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13, color: "var(--text-dim)", width: 46 }}>Map {i + 1}</span>
             <input
               type="number" className="vt-input vt-mono" style={{ width: 70 }}
@@ -1294,11 +1377,30 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
               onChange={(e) => setMapScore(i, "b", e.target.value)}
               onKeyDown={focusNextInput}
             />
+            {teamA && teamB && (
+              <button type="button" className="vt-btn vt-cut-sm" style={{ padding: "4px 8px", fontSize: 11, borderColor: openLineup === i ? "var(--steel)" : undefined }} onClick={() => setOpenLineup(openLineup === i ? null : i)} title="Qui a joué cette map">
+                <Users size={12} /> Compo
+              </button>
+            )}
             {mapScores.length > 1 && (
               <button className="vt-btn vt-cut-sm" style={{ padding: "4px 8px" }} onClick={() => removeMapRow(i)}><Trash2 size={12} /></button>
             )}
+            {changes && <span style={{ fontSize: 11, color: "var(--gold)" }}>↺ {changes}</span>}
+            {sizeWarning && <span style={{ fontSize: 11, color: "var(--red)" }}>{sizeWarning}</span>}
           </div>
-        ))}
+          {openLineup === i && teamA && teamB && (
+            <div className="vt-panel vt-cut-sm" style={{ padding: "4px 10px 10px", margin: "6px 0 4px 54px" }}>
+              <RosterPicker team={teamA} players={players} selected={resolved.lineupA} onToggle={(id) => toggleMapLineup(i, "A", id)} hint={`${teamA.name} — joueurs sur la map ${i + 1}`} />
+              <RosterPicker team={teamB} players={players} selected={resolved.lineupB} onToggle={(id) => toggleMapLineup(i, "B", id)} hint={`${teamB.name} — joueurs sur la map ${i + 1}`} />
+              <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 6, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                Un changement ici s'applique aussi aux maps suivantes, sauf si elles ont leur propre compo.
+                {hasOverride && <button type="button" className="vt-btn vt-cut-sm" style={{ padding: "3px 7px", fontSize: 10 }} onClick={() => resetMapLineup(i)}>Reprendre la compo précédente</button>}
+              </div>
+            </div>
+          )}
+          </div>
+          );
+        })}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
         <button className="vt-btn vt-cut-sm" onClick={addMapRow}><Plus size={14} /> Ajouter une map</button>
@@ -1328,6 +1430,8 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--line)" }}>
                   <th className="vt-th" style={{ padding: "8px 10px", textAlign: "left" }}>Joueur</th>
+                  <th className="vt-th" style={{ padding: "8px 10px", textAlign: "right" }} title="Calculé depuis la compo de chaque map">Maps</th>
+                  <th className="vt-th" style={{ padding: "8px 10px", textAlign: "right" }} title="Calculé depuis la compo de chaque map">Rounds</th>
                   {TOURNAMENT_PLAYER_FIELDS.map((k) => (
                     <th key={k} className="vt-th" style={{ padding: "8px 10px", textAlign: "right" }}>{labels[k]}</th>
                   ))}
@@ -1337,6 +1441,8 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
                 {roster.map((p) => (
                   <tr key={p.id} style={{ borderBottom: "1px solid var(--line)" }}>
                     <td style={{ padding: "6px 10px", fontSize: 13, whiteSpace: "nowrap" }}>{p.name}</td>
+                    <td className="vt-mono" style={{ padding: "6px 10px", fontSize: 12, textAlign: "right", color: "var(--text-dim)" }}>{participation.get(p.id)?.maps ?? 0}</td>
+                    <td className="vt-mono" style={{ padding: "6px 10px", fontSize: 12, textAlign: "right", color: "var(--text-dim)" }}>{participation.get(p.id)?.rounds ?? 0}</td>
                     {TOURNAMENT_PLAYER_FIELDS.map((k) => (
                       <td key={k} style={{ padding: "4px 6px" }}>
                         <input
@@ -1354,8 +1460,8 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
             </table>
           </div>
           <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
-            Chaque joueur sélectionné reçoit {totalMaps} map{totalMaps > 1 ? "s" : ""} et {totalRounds} round{totalRounds > 1 ? "s" : ""}
-            pour ce match — l'appli ne sait pas combien de maps précises un remplaçant a joué individuellement.
+            Maps et rounds sont calculés pour chaque joueur à partir de la compo de chaque map :
+            un remplaçant ne reçoit que les maps qu'il a jouées. Saisis ses stats sur ses maps à lui.
           </div>
           {(() => {
             const missing = roster.filter((p) => {
@@ -1393,16 +1499,29 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, onClose, 
             if (!label.trim()) { setSaveError("Ajoute une étiquette."); return; }
             const stats = {};
             Object.entries(rows).forEach(([playerId, vals]) => {
+              // un joueur retiré de toutes les compos ne garde pas de stats sur ce match
+              if (!rosterIds.includes(playerId)) return;
               const hasValue = Object.values(vals).some((v) => v !== "" && v !== undefined);
               if (!hasValue) return;
-              stats[playerId] = computeMatchDerived({ ...vals, maps: totalMaps, round: totalRounds });
+              const played = participation.get(playerId);
+              stats[playerId] = computeMatchDerived({
+                ...vals,
+                maps: played ? played.maps : totalMaps,
+                round: played ? played.rounds : totalRounds,
+              });
             });
             if (Object.keys(stats).length === 0) { setSaveError("Aucune stat saisie."); return; }
+            // chaque map jouée enregistre sa compo exacte ; une map sans score n'en a pas
+            const savedMapScores = resolvedMaps.map((m) => {
+              if (isPlayedMap(m)) return m;
+              const { lineupA: _a, lineupB: _b, ...rest } = m;
+              return rest;
+            });
             onSave(
               {
                 id: existingMatch?.id || uid(),
                 label: label.trim(), teamAId, teamBId, winnerTeamId: winnerTeamId || null,
-                mapScores, stats,
+                mapScores: savedMapScores, stats,
                 appliedToStats: alreadyApplied ? true : applyToStats,
               },
               wasApplied
@@ -1582,6 +1701,21 @@ function TournamentDetail({ tournament, players, teamLogos, onBack, onAddTeam, o
                       {m.mapScores.filter((s) => s.a !== "" || s.b !== "").map((s) => `${s.a || 0}-${s.b || 0}`).join(" · ")}
                     </div>
                   )}
+                  {(() => {
+                    const nameOf = (id) => players.find((p) => p.id === id)?.name || "?";
+                    const played = (m.mapScores || []).map((s, idx) => ({ s, idx })).filter(({ s }) => isPlayedMap(s));
+                    const subs = played.slice(1).map(({ s, idx }, k) => {
+                      const before = played[k].s;
+                      const text = [
+                        substitutionSummary(before.lineupA, s.lineupA, nameOf),
+                        substitutionSummary(before.lineupB, s.lineupB, nameOf),
+                      ].filter(Boolean).join(" · ");
+                      return text && Array.isArray(s.lineupA) && Array.isArray(before.lineupA) ? `Map ${idx + 1} : ${text}` : "";
+                    }).filter(Boolean);
+                    return subs.length > 0 && (
+                      <div style={{ fontSize: 11, color: "var(--gold)", marginTop: 3 }}>↺ {subs.join(" — ")}</div>
+                    );
+                  })()}
                   <div style={{ marginTop: 4 }}>
                     {m.appliedToStats ? (
                       <span style={{ fontSize: 11, color: "var(--green)" }}>✓ Appliqué au classement</span>
@@ -1885,8 +2019,9 @@ function RecordsView({ tournaments, players, filters, onFiltersChange }) {
   );
 }
 
-function TeamsLeaderboard({ tournaments, teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
+function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
   const ranking = useMemo(() => computeTeamElo(tournaments), [tournaments]);
+  const playerNames = useMemo(() => new Map(players.map((p) => [p.id, p.name])), [players]);
   const hiddenSet = new Set(hiddenTeams);
   const visible = ranking.filter((t) => !hiddenSet.has(t.name.trim().toLowerCase()));
   const hidden = ranking.filter((t) => hiddenSet.has(t.name.trim().toLowerCase()));
@@ -1904,10 +2039,11 @@ function TeamsLeaderboard({ tournaments, teamLogos, hiddenTeams, onToggleHidden,
   return (
     <div>
       <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 16 }}>
-        Score Elo (0-2000, départ à 1000) recalculé sur tous les matchs enregistrés, appliqués au
-        classement général ou non, dans l'ordre chronologique des tournois. Une victoire contre un
-        favori rapporte gros, une victoire attendue rapporte peu ; gagner un tournoi ajoute un bonus
-        selon son prestige (Champions {'>'} Masters {'>'} Split).
+        L'Elo appartient aux joueurs : celui d'une équipe est la moyenne de ses 5 joueurs principaux
+        (ceux qui ont le plus joué lors de son dernier tournoi). Il suit donc le roster : un joueur
+        qui change d'équipe emporte son Elo avec lui. Recalculé sur tous les matchs enregistrés,
+        dans l'ordre chronologique ; battre un favori rapporte gros, un remplaçant gagne selon ses
+        maps jouées, et gagner un tournoi donne un bonus à chaque joueur du roster vainqueur.
       </div>
       <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: hidden.length > 0 ? 16 : 0 }}>
         {visible.map((team, i) => {
@@ -1926,6 +2062,11 @@ function TeamsLeaderboard({ tournaments, teamLogos, hiddenTeams, onToggleHidden,
               {logo && <img src={logo} className="vt-logo" alt="" />}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="vt-display" style={{ fontWeight: 600, fontSize: 15 }}>{team.name}</div>
+                {team.roster.length > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {team.roster.map((r) => playerNames.get(r.id) || "?").join(" · ")}
+                  </div>
+                )}
                 <div style={{ height: 4, background: "var(--panel-raised)", marginTop: 5, overflow: "hidden" }}>
                   <div style={{ height: "100%", width: `${pct}%`, background: "var(--red)" }} />
                 </div>
@@ -2084,6 +2225,26 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      <div className="vt-label" style={{ marginBottom: 8 }}>Roster actuel</div>
+      {entry.roster.length === 0 ? (
+        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun joueur.</div>
+      ) : (
+        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
+          {[...entry.roster.map((r) => ({ ...r, sub: false })), ...entry.substitutes.map((id) => ({ id, elo: null, sub: true }))].map((r, i, arr) => {
+            const p = players.find((x) => x.id === r.id);
+            if (!p) return null;
+            return (
+              <div key={r.id} className="vt-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", cursor: "pointer", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }} onClick={() => onOpenPlayer(r.id)}>
+                <span className="vt-display" style={{ fontWeight: 600 }}>
+                  {p.name}{r.sub && <span className="vt-label" style={{ marginLeft: 8 }}>Remplaçant</span>}
+                </span>
+                {!r.sub && <span className="vt-mono" style={{ fontWeight: 700 }}>{Math.round(r.elo)}</span>}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -2289,8 +2450,12 @@ export default function App() {
 
   // silent update (no modal to close) — used for trophies, added inline on the profile page
   const updatePlayer = (p) => {
-    setPlayers((prev) => prev.map((x) => (x.id === p.id ? p : x)));
-    persist(() => upsertPlayerDb(p), `la sauvegarde de ${p.name}`);
+    // la fiche affichée contient des valeurs calculées (MVP, MJ, Elo) : on garde les stats
+    // réellement enregistrées pour ne jamais les figer en base
+    const raw = players.find((x) => x.id === p.id);
+    const next = raw ? { ...p, stats: raw.stats } : p;
+    setPlayers((prev) => prev.map((x) => (x.id === p.id ? next : x)));
+    persist(() => upsertPlayerDb(next), `la sauvegarde de ${p.name}`);
   };
 
   // Must stay synchronous because TeamModal immediately needs the returned player's id.
@@ -2502,10 +2667,17 @@ export default function App() {
   // MVP/MJ are fully derived from every recorded match (applied or not) — never stored,
   // so there's nothing to keep in sync
   const mvpMjCounts = useMemo(() => computeMvpMjCounts(tournaments), [tournaments]);
+  // Elo individuel : recalculé à partir de tous les matchs, jamais stocké non plus
+  const playerElo = useMemo(() => computePlayerElo(tournaments), [tournaments]);
   const displayPlayers = useMemo(() => players.map((p) => ({
     ...p,
-    stats: { ...p.stats, mvp: mvpMjCounts[p.id]?.mvp || 0, mj: mvpMjCounts[p.id]?.mj || 0 },
-  })), [players, mvpMjCounts]);
+    stats: {
+      ...p.stats,
+      mvp: mvpMjCounts[p.id]?.mvp || 0,
+      mj: mvpMjCounts[p.id]?.mj || 0,
+      elo: playerElo.get(p.id)?.elo ?? ELO_START,
+    },
+  })), [players, mvpMjCounts, playerElo]);
 
   const filteredLeaderboardPlayers = useMemo(
     () => buildFilteredLeaderboardPlayers(displayPlayers, tournaments, dataFilters),
@@ -2586,7 +2758,7 @@ export default function App() {
         </div>
 
         {view.name === "records" && <RecordsView tournaments={tournaments} players={players} filters={dataFilters} onFiltersChange={setDataFilters} />}
-        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
+        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} players={players} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
         {view.name === "team" && (
           <TeamProfile
             nameKey={view.key}
@@ -2632,6 +2804,7 @@ export default function App() {
           <PlayerDetail
             player={activePlayer}
             players={displayPlayers}
+            eloHistory={playerElo.get(activePlayer.id)?.history || []}
             tournaments={tournaments}
             teamLogos={teamLogos}
             onBack={backToLeaderboard}
