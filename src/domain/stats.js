@@ -46,6 +46,7 @@ export const COUNTRIES = [
 
 // canonical stat fields, in the exact order requested
 export const STAT_FIELDS = [
+  { key: "elo", label: "Elo", decimals: 0 }, // calculé, affiché en premier
   { key: "match", label: "Match", decimals: 0 },
   { key: "maps", label: "Maps", decimals: 0 },
   { key: "round", label: "Round", decimals: 0 },
@@ -67,7 +68,6 @@ export const STAT_FIELDS = [
   { key: "clutchPct", label: "Clutch %", decimals: 0, suffix: "%" },
   { key: "mvp", label: "MVP", decimals: 0 },
   { key: "mj", label: "MJ", decimals: 0 },
-  { key: "elo", label: "Elo", decimals: 0 },
 ];
 
 export const HEADLINE_KEYS = ["elo", "rating", "acs", "kd", "kda", "kast", "clutchPct", "mvp", "mj"];

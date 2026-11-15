@@ -9,10 +9,11 @@ import { isSupabaseConfigured, supabase } from "./supabaseClient";
 import {
   loadValtrackData, upsertPlayerDb, upsertPlayersDb, deletePlayerDb,
   upsertTournamentDb, upsertTeamDb, upsertMatchDb, setMatchAppliedDb,
-  setTeamLogoDb, setHiddenTeamDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
+  setTeamLogoDb, setHiddenTeamDb, upsertOrganizationDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
 } from "./valtrackDb";
 import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
-import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo, getTeamProfile } from "./domain/elo.js";
+import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo } from "./domain/elo.js";
+import { buildTeamPage } from "./domain/teamPage.js";
 import { computeParticipation, resolveLineups, compactLineups, isPlayedMap, substitutionSummary } from "./domain/participation.js";
 import { DEFAULT_DATA_FILTERS, tournamentYear, normalizedTeamName, filterTournamentScope, eligiblePlayerIdsForFilters, trimTournamentStatsForFilters, buildFilteredLeaderboardPlayers } from "./domain/filters.js";
 import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
@@ -1024,9 +1025,23 @@ function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = []
 
 // ==================== tournaments ====================
 
-function TeamModal({ team, players, onClose, onSave, onCreatePlayer }) {
+function TeamModal({ team, players, organizations = [], organizationsEnabled = false, onClose, onSave, onCreatePlayer }) {
   const isEdit = !!team;
   const [name, setName] = useState(team?.name || "");
+  // "auto" = l'organisation qui porte ce nom (créée si elle n'existe pas encore)
+  const [orgChoice, setOrgChoice] = useState(team?.organizationId || "auto");
+  const sortedOrgs = [...organizations].sort((a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
+  const autoOrg = organizations.find((o) => normalizedTeamName(o.name) === normalizedTeamName(name));
+
+  const save = () => {
+    if (!name.trim()) return;
+    const base = { id: team?.id || uid(), name: name.trim(), playerIds, eliminated: team?.eliminated || false };
+    if (!organizationsEnabled) { onSave({ ...base, organizationId: team?.organizationId || null }); return; }
+    if (orgChoice !== "auto") { onSave({ ...base, organizationId: orgChoice }); return; }
+    if (autoOrg) { onSave({ ...base, organizationId: autoOrg.id }); return; }
+    const created = { id: "org_" + uid(), name: name.trim(), rosterOverride: null };
+    onSave({ ...base, organizationId: created.id }, created);
+  };
   const [playerIds, setPlayerIds] = useState(team?.playerIds || []);
   const [search, setSearch] = useState("");
   const [newPlayerName, setNewPlayerName] = useState("");
@@ -1047,6 +1062,17 @@ function TeamModal({ team, players, onClose, onSave, onCreatePlayer }) {
       <Field label="Nom de l'équipe *">
         <input className="vt-input" style={{ width: "100%" }} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
       </Field>
+      {organizationsEnabled && (
+        <Field label="Organisation">
+          <select className="vt-select" style={{ width: "100%" }} value={orgChoice} onChange={(e) => setOrgChoice(e.target.value)}>
+            <option value="auto">{autoOrg ? `Automatique : ${autoOrg.name}` : "Automatique : nouvelle organisation avec ce nom"}</option>
+            {sortedOrgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+          </select>
+          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+            Choisis une organisation existante si l'équipe a changé de nom : elle garde alors son historique.
+          </div>
+        </Field>
+      )}
 
       <div className="vt-label" style={{ margin: "14px 0 8px" }}>Créer un nouveau joueur et l'ajouter</div>
       <div style={{ display: "flex", gap: 8 }}>
@@ -1071,7 +1097,7 @@ function TeamModal({ team, players, onClose, onSave, onCreatePlayer }) {
         <button className="vt-btn vt-cut-sm" onClick={onClose}>Annuler</button>
         <button
           className="vt-btn vt-btn-primary vt-cut-sm"
-          onClick={() => { if (name.trim()) onSave({ id: team?.id || uid(), name: name.trim(), playerIds, eliminated: team?.eliminated || false }); }}
+          onClick={save}
         >
           {isEdit ? "Enregistrer" : "Créer l'équipe"}
         </button>
@@ -2019,8 +2045,8 @@ function RecordsView({ tournaments, players, filters, onFiltersChange }) {
   );
 }
 
-function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
-  const ranking = useMemo(() => computeTeamElo(tournaments), [tournaments]);
+function TeamsLeaderboard({ tournaments, players = [], organizations = [], teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
+  const ranking = useMemo(() => computeTeamElo(tournaments, undefined, organizations), [tournaments, organizations]);
   const playerNames = useMemo(() => new Map(players.map((p) => [p.id, p.name])), [players]);
   const hiddenSet = new Set(hiddenTeams);
   const visible = ranking.filter((t) => !hiddenSet.has(t.name.trim().toLowerCase()));
@@ -2054,9 +2080,9 @@ function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, o
           const last = team.history[team.history.length - 1];
           return (
             <div
-              key={team.name} className="vt-row"
+              key={team.key} className="vt-row"
               style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: i < visible.length - 1 ? "1px solid var(--line)" : "none", cursor: "pointer" }}
-              onClick={() => onOpenTeam(team.name)}
+              onClick={() => onOpenTeam(team.key)}
             >
               <div className={"vt-display vt-mono " + medal} style={{ fontSize: 18, fontWeight: 700, width: 26, flexShrink: 0 }}>{rank}</div>
               {logo && <img src={logo} className="vt-logo" alt="" />}
@@ -2094,7 +2120,7 @@ function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, o
           <div className="vt-label" style={{ marginBottom: 8 }}>Équipes retirées ({hidden.length})</div>
           <div className="vt-panel vt-cut" style={{ padding: 4 }}>
             {hidden.map((team, i) => (
-              <div key={team.name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", opacity: 0.6, borderBottom: i < hidden.length - 1 ? "1px solid var(--line)" : "none" }}>
+              <div key={team.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", opacity: 0.6, borderBottom: i < hidden.length - 1 ? "1px solid var(--line)" : "none" }}>
                 <div style={{ flex: 1 }} className="vt-display">{team.name}</div>
                 <div className="vt-mono">{Math.round(team.elo)}</div>
                 <button className="vt-btn vt-cut-sm" style={{ padding: "5px 9px", fontSize: 11 }} onClick={() => onToggleHidden(team.name)}>
@@ -2109,8 +2135,119 @@ function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, o
   );
 }
 
-function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, onToggleHidden, onBack, onOpenPlayer }) {
-  const data = useMemo(() => getTeamProfile(nameKey, tournaments, players), [nameKey, tournaments, players]);
+// ---------- page équipe ----------
+const MEMBER_COLUMNS = [
+  { key: "match", label: "Matchs", decimals: 0 },
+  { key: "maps", label: "Maps", decimals: 0 },
+  { key: "round", label: "Rounds", decimals: 0 },
+  { key: "rating", label: "Rating", decimals: 2 },
+  { key: "acs", label: "ACS", decimals: 0 },
+  { key: "kd", label: "KD", decimals: 2 },
+  { key: "kast", label: "KAST", decimals: 0, suffix: "%" },
+];
+
+function formatPeriod(since, until, active) {
+  if (active) return since ? `depuis ${since}` : "—";
+  if (since && until && since !== until) return `${since} → ${until}`;
+  return since || until || "—";
+}
+
+function MemberTable({ rows, active, onOpenPlayer, detailed }) {
+  const extra = detailed ? [
+    { label: "FK / FD", render: (s) => `${num(s.fk)} / ${num(s.fd)}` },
+    { label: "Clutch", render: (s) => num(s.clutch) },
+    { label: "Multi", render: (s) => num(s.multiKill) },
+    { label: "MVP / MJ", render: (s) => `${num(s.mvp)} / ${num(s.mj)}` },
+  ] : [];
+  return (
+    <div className="vt-panel vt-cut vt-scroll" style={{ overflowX: "auto", marginBottom: 22 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: detailed ? 1150 : 860 }}>
+        <thead>
+          <tr style={{ borderBottom: "1px solid var(--line)" }}>
+            <th className="vt-th" style={{ padding: "9px 12px", textAlign: "left", cursor: "default" }}>Joueur</th>
+            <th className="vt-th" style={{ padding: "9px 12px", textAlign: "right", cursor: "default" }}>Elo</th>
+            <th className="vt-th" style={{ padding: "9px 12px", textAlign: "left", cursor: "default" }}>{active ? "Arrivée" : "Période"}</th>
+            {MEMBER_COLUMNS.map((c) => <th key={c.key} className="vt-th" style={{ padding: "9px 12px", textAlign: "right", cursor: "default" }}>{c.label}</th>)}
+            {extra.map((c) => <th key={c.label} className="vt-th" style={{ padding: "9px 12px", textAlign: "right", cursor: "default" }}>{c.label}</th>)}
+            <th className="vt-th" style={{ padding: "9px 12px", textAlign: "left", cursor: "default" }}>Trophées</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} className="vt-row" style={{ borderBottom: "1px solid var(--line)", cursor: "pointer" }} onClick={() => onOpenPlayer(r.id)}>
+              <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
+                <span className="vt-display" style={{ fontWeight: 600, fontSize: 15 }}>{r.player?.name || "?"}</span>
+                {r.substitute && <span className="vt-label" style={{ marginLeft: 8 }}>Remplaçant</span>}
+              </td>
+              <td className="vt-mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>{Math.round(r.elo)}</td>
+              <td style={{ padding: "10px 12px", fontSize: 12, color: "var(--text-dim)", whiteSpace: "nowrap" }}>{formatPeriod(r.since, r.until, active)}</td>
+              {MEMBER_COLUMNS.map((c) => (
+                <td key={c.key} className="vt-mono" style={{ padding: "10px 12px", textAlign: "right" }}>
+                  {num(r.stats.match) > 0 || ["match", "maps", "round"].includes(c.key) ? fmtStat(r.stats[c.key], c) : "—"}
+                </td>
+              ))}
+              {extra.map((c) => <td key={c.label} className="vt-mono" style={{ padding: "10px 12px", textAlign: "right" }}>{c.render(r.stats)}</td>)}
+              <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
+                {r.trophies.length === 0 ? <span style={{ color: "var(--text-dim)" }}>—</span> : r.trophies.map((t, i) => (
+                  <span key={i} title={`${t.type} — ${t.tournamentName}`} style={{ marginRight: 4 }}><Trophy size={13} color={TROPHY_COLOR[t.type] || TROPHY_COLOR.Autre} /></span>
+                ))}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function RosterEditModal({ teamName, organization, players, currentIds, onClose, onSave }) {
+  const [name, setName] = useState(organization?.name || teamName);
+  const [selected, setSelected] = useState(currentIds);
+  const [search, setSearch] = useState("");
+  const toggle = (id) => setSelected((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  const filtered = players
+    .filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => Number(selected.includes(b.id)) - Number(selected.includes(a.id)) || a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
+  return (
+    <ModalShell title={`Roster actif — ${teamName}`} onClose={onClose} wide>
+      <Field label="Nom de l'organisation">
+        <input className="vt-input" style={{ width: "100%" }} value={name} onChange={(e) => setName(e.target.value)} />
+      </Field>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 10 }}>
+        Par défaut, le roster actif vient du dernier tournoi de l'équipe. Corrige-le ici si besoin
+        (joueur signé qui n'a encore rien joué, départ…). Les 5 joueurs qui ont le plus joué
+        récemment comptent pour l'Elo de l'équipe, les autres apparaissent comme remplaçants.
+      </div>
+      <div className="vt-label" style={{ marginBottom: 6 }}>Joueurs ({selected.length})</div>
+      <input className="vt-input" style={{ width: "100%", marginBottom: 8 }} placeholder="Rechercher un joueur…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      <div className="vt-panel vt-cut-sm vt-scroll" style={{ maxHeight: 260, overflowY: "auto" }}>
+        {filtered.map((p) => (
+          <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: "1px solid var(--line)", cursor: "pointer" }}>
+            <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} />
+            <span className="vt-display" style={{ fontSize: 14 }}>{p.name}</span>
+            {currentTeam(p) && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>({currentTeam(p)})</span>}
+          </label>
+        ))}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+        <button className="vt-btn vt-cut-sm" onClick={() => onSave({ ...organization, name: name.trim() || teamName, rosterOverride: null })}>
+          Revenir au roster automatique
+        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="vt-btn vt-cut-sm" onClick={onClose}>Annuler</button>
+          <button className="vt-btn vt-btn-primary vt-cut-sm" onClick={() => onSave({ ...organization, name: name.trim() || teamName, rosterOverride: selected })}>Enregistrer</button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function TeamProfile({ teamKey, tournaments, players, organizations, organizationsEnabled, playerElo, teamLogos, hiddenTeams, onToggleHidden, onBack, onOpenPlayer, onSaveOrganization }) {
+  const data = useMemo(
+    () => buildTeamPage(teamKey, tournaments, players, { organizations, playerElo }),
+    [teamKey, tournaments, players, organizations, playerElo],
+  );
+  const [editingRoster, setEditingRoster] = useState(false);
 
   if (!data) {
     return (
@@ -2121,12 +2258,14 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
     );
   }
 
-  const { entry, rank, wins, losses, bestGain, worstLoss, trophies, roster, recent } = data;
+  const { entry, rank, wins, losses, bestGain, worstLoss, recent, active, former, palmares } = data;
+  const playerName = (id) => players.find((p) => p.id === id)?.name || "?";
   const logo = getLogo(teamLogos, entry.name);
   const isHidden = hiddenTeams.includes(entry.name.trim().toLowerCase());
   const totalGames = wins + losses;
   const winRate = totalGames ? Math.round((wins / totalGames) * 100) : 0;
   const pct = Math.round((entry.elo / ELO_MAX) * 100);
+  const canEditRoster = organizationsEnabled && Boolean(entry.organization);
 
   return (
     <div>
@@ -2138,7 +2277,7 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
             {logo && <img src={logo} className="vt-logo-lg" alt="" />}
             <div>
               <h1 className="vt-display" style={{ fontSize: 30, fontWeight: 700, textTransform: "uppercase" }}>{entry.name}</h1>
-              <div style={{ fontSize: 13, color: "var(--text-dim)" }}>#{rank} au classement Elo</div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)" }}>#{rank} au classement Elo · Elo du roster actuel</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -2160,9 +2299,51 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
         <StatCard label="Victoires" value={wins} accent="var(--green)" />
         <StatCard label="Défaites" value={losses} accent="var(--red)" />
         <StatCard label="Taux de victoire" value={winRate + "%"} />
+        <StatCard label="Trophées" value={palmares.length} accent="var(--gold)" />
       </div>
 
-      <div className="vt-label" style={{ marginBottom: 8 }}>Records</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+        <div className="vt-label">
+          Roster actif{entry.manualRoster && <span style={{ color: "var(--steel)", marginLeft: 8 }}>· corrigé à la main</span>}
+        </div>
+        {canEditRoster ? (
+          <button className="vt-btn vt-cut-sm" style={{ padding: "5px 9px", fontSize: 11 }} onClick={() => setEditingRoster(true)}><UserCog size={12} /> Modifier le roster</button>
+        ) : (
+          <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Correction manuelle disponible après le script SQL de l'étape C</span>
+        )}
+      </div>
+      {active.length === 0 ? (
+        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun joueur.</div>
+      ) : <MemberTable rows={active} active onOpenPlayer={onOpenPlayer} />}
+
+      <div className="vt-label" style={{ marginBottom: 8 }}>Palmarès</div>
+      {palmares.length === 0 ? (
+        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun tournoi remporté pour l'instant.</div>
+      ) : (
+        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
+          {[...palmares].sort((a, b) => (TROPHY_RANK[b.type] ?? 0) - (TROPHY_RANK[a.type] ?? 0) || String(b.date).localeCompare(String(a.date))).map((t, i, arr) => {
+            const c = TROPHY_COLOR[t.type] || TROPHY_COLOR.Autre;
+            return (
+              <div key={t.tournamentId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "10px 16px", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }}>
+                <span className="vt-display" style={{ fontWeight: 600, color: c, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <Trophy size={14} color={c} /> {t.type} — {t.tournamentName}
+                  {t.date && <span className="vt-mono" style={{ fontSize: 11, color: "var(--text-dim)", fontWeight: 400 }}>{t.date.slice(0, 4)}</span>}
+                </span>
+                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t.playerIds.map(playerName).join(" · ")}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="vt-label" style={{ marginBottom: 4 }}>Anciens joueurs ({former.length})</div>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
+        Stats calculées uniquement sur leurs matchs avec {entry.name} (tous les matchs enregistrés).
+      </div>
+      {former.length === 0 ? (
+        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun ancien joueur.</div>
+      ) : <MemberTable rows={former} detailed onOpenPlayer={onOpenPlayer} />}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 10, marginBottom: 22 }}>
         <div className="vt-panel vt-cut-sm" style={{ padding: 14 }}>
           <div className="vt-label" style={{ marginBottom: 8 }}>Plus gros gain Elo</div>
@@ -2171,7 +2352,7 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
               <div className="vt-mono" style={{ color: "var(--green)", fontWeight: 700, fontSize: 20 }}>+{Math.round(bestGain.delta)}</div>
               <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>vs {bestGain.opponentName} — {bestGain.tournamentName} · {bestGain.matchLabel}</div>
             </>
-          ) : <div style={{ color: "var(--text-dim)", fontSize: 13 }}>Aucun match enregistré.</div>}
+          ) : <div style={{ color: "var(--text-dim)", fontSize: 13 }}>Aucune victoire enregistrée.</div>}
         </div>
         <div className="vt-panel vt-cut-sm" style={{ padding: 14 }}>
           <div className="vt-label" style={{ marginBottom: 8 }}>Plus grosse perte Elo</div>
@@ -2180,32 +2361,15 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
               <div className="vt-mono" style={{ color: "var(--red)", fontWeight: 700, fontSize: 20 }}>{Math.round(worstLoss.delta)}</div>
               <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>vs {worstLoss.opponentName} — {worstLoss.tournamentName} · {worstLoss.matchLabel}</div>
             </>
-          ) : <div style={{ color: "var(--text-dim)", fontSize: 13 }}>Aucun match enregistré.</div>}
+          ) : <div style={{ color: "var(--text-dim)", fontSize: 13 }}>Aucune défaite enregistrée.</div>}
         </div>
       </div>
 
-      <div className="vt-label" style={{ marginBottom: 8 }}>Palmarès</div>
-      {trophies.length === 0 ? (
-        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun tournoi remporté pour l'instant.</div>
-      ) : (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 22 }}>
-          {trophies.map((t, i) => {
-            const c = TROPHY_COLOR[t.tournamentType] || TROPHY_COLOR.Autre;
-            return (
-              <div key={i} className="vt-trophy-pill vt-cut-sm" style={{ borderColor: c }}>
-                <Trophy size={14} color={c} />
-                <span className="vt-display" style={{ fontSize: 13, fontWeight: 600, color: c }}>{t.tournamentType} — {t.tournamentName}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       <div className="vt-label" style={{ marginBottom: 8 }}>Historique récent</div>
       {recent.length === 0 ? (
-        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun événement enregistré.</div>
+        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14 }}>Aucun événement enregistré.</div>
       ) : (
-        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
+        <div className="vt-panel vt-cut" style={{ padding: 4 }}>
           {recent.map((h, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: i < recent.length - 1 ? "1px solid var(--line)" : "none" }}>
               <div>
@@ -2228,35 +2392,15 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
         </div>
       )}
 
-      <div className="vt-label" style={{ marginBottom: 8 }}>Roster actuel</div>
-      {entry.roster.length === 0 ? (
-        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun joueur.</div>
-      ) : (
-        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
-          {[...entry.roster.map((r) => ({ ...r, sub: false })), ...entry.substitutes.map((id) => ({ id, elo: null, sub: true }))].map((r, i, arr) => {
-            const p = players.find((x) => x.id === r.id);
-            if (!p) return null;
-            return (
-              <div key={r.id} className="vt-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", cursor: "pointer", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }} onClick={() => onOpenPlayer(r.id)}>
-                <span className="vt-display" style={{ fontWeight: 600 }}>
-                  {p.name}{r.sub && <span className="vt-label" style={{ marginLeft: 8 }}>Remplaçant</span>}
-                </span>
-                {!r.sub && <span className="vt-mono" style={{ fontWeight: 700 }}>{Math.round(r.elo)}</span>}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="vt-label" style={{ marginBottom: 8 }}>Joueurs passés par cette équipe</div>
-      {roster.length === 0 ? (
-        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14 }}>Aucun joueur enregistré.</div>
-      ) : (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          {roster.map((p) => (
-            <button key={p.id} className="vt-btn vt-cut-sm" onClick={() => onOpenPlayer(p.id)}>{p.name}</button>
-          ))}
-        </div>
+      {editingRoster && (
+        <RosterEditModal
+          teamName={entry.name}
+          organization={entry.organization}
+          players={players}
+          currentIds={active.map((r) => r.id)}
+          onClose={() => setEditingRoster(false)}
+          onSave={(org) => { onSaveOrganization(org); setEditingRoster(false); }}
+        />
       )}
     </div>
   );
@@ -2277,6 +2421,8 @@ export default function App() {
   const [teamLogos, setTeamLogos] = useState({});
   const [tournaments, setTournaments] = useState([]);
   const [hiddenTeams, setHiddenTeams] = useState([]);
+  const [organizations, setOrganizations] = useState([]);
+  const [organizationsEnabled, setOrganizationsEnabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [session, setSession] = useState(null);
@@ -2354,6 +2500,8 @@ export default function App() {
         setTournaments((data.tournaments || []).map(migrateTournament));
         setTeamLogos(data.teamLogos || {});
         setHiddenTeams(data.hiddenTeams || []);
+        setOrganizations(data.organizations || []);
+        setOrganizationsEnabled(Boolean(data.organizationsEnabled));
         setSaveError("");
 
         // Les logos sont chargés après les données essentielles. Ils peuvent donc apparaître
@@ -2394,9 +2542,9 @@ export default function App() {
     scrollPositions.current.tournaments = window.scrollY;
     setView({ name: "tournament", id });
   };
-  const openTeam = (teamName) => {
+  const openTeam = (teamKey) => {
     scrollPositions.current.teams = window.scrollY;
-    setView({ name: "team", key: normalizedTeamName(teamName) });
+    setView({ name: "team", key: teamKey });
   };
   const backToLeaderboard = () => setView({ name: "leaderboard" });
   const backToTournaments = () => setView({ name: "tournaments" });
@@ -2427,6 +2575,11 @@ export default function App() {
       }),
       "la sauvegarde du logo"
     );
+  };
+
+  const saveOrganization = (org) => {
+    setOrganizations((prev) => (prev.some((o) => o.id === org.id) ? prev.map((o) => (o.id === org.id ? org : o)) : [...prev, org]));
+    persist(() => upsertOrganizationDb(org), `la sauvegarde de l'organisation ${org.name}`);
   };
 
   const toggleHiddenTeam = (teamName) => {
@@ -2516,7 +2669,9 @@ export default function App() {
     persist(() => upsertTournamentDb(t), `la sauvegarde du tournoi ${t.name}`);
   };
 
-  const saveTeam = (tournamentId, team) => {
+  const saveTeam = (tournamentId, team, newOrganization = null) => {
+    // l'organisation doit exister avant l'équipe qui la référence (les écritures sont en file)
+    if (newOrganization) saveOrganization(newOrganization);
     setTournaments((prev) => prev.map((t) => {
       if (t.id !== tournamentId) return t;
       const idx = t.teams.findIndex((x) => x.id === team.id);
@@ -2758,12 +2913,16 @@ export default function App() {
         </div>
 
         {view.name === "records" && <RecordsView tournaments={tournaments} players={players} filters={dataFilters} onFiltersChange={setDataFilters} />}
-        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} players={players} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
+        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} players={players} organizations={organizations} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
         {view.name === "team" && (
           <TeamProfile
-            nameKey={view.key}
+            teamKey={view.key}
             tournaments={tournaments}
             players={players}
+            organizations={organizations}
+            organizationsEnabled={organizationsEnabled}
+            playerElo={playerElo}
+            onSaveOrganization={saveOrganization}
             teamLogos={teamLogos}
             hiddenTeams={hiddenTeams}
             onToggleHidden={toggleHiddenTeam}
@@ -2865,9 +3024,11 @@ export default function App() {
           tournament={activeTournament}
           team={editingTeam}
           players={players}
+          organizations={organizations}
+          organizationsEnabled={organizationsEnabled}
           onCreatePlayer={quickCreatePlayer}
           onClose={() => { setModal(null); setEditingTeam(null); }}
-          onSave={(team) => saveTeam(activeTournament.id, team)}
+          onSave={(team, newOrganization) => saveTeam(activeTournament.id, team, newOrganization)}
         />
       )}
       {modal === "addTournamentMatch" && activeTournament && (

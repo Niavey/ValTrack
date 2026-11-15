@@ -1,0 +1,1309 @@
+diff --git a/src/App.css b/src/App.css
+deleted file mode 100644
+index f90339d..0000000
+--- a/src/App.css
++++ /dev/null
+@@ -1,184 +0,0 @@
+-.counter {
+-  font-size: 16px;
+-  padding: 5px 10px;
+-  border-radius: 5px;
+-  color: var(--accent);
+-  background: var(--accent-bg);
+-  border: 2px solid transparent;
+-  transition: border-color 0.3s;
+-  margin-bottom: 24px;
+-
+-  &:hover {
+-    border-color: var(--accent-border);
+-  }
+-  &:focus-visible {
+-    outline: 2px solid var(--accent);
+-    outline-offset: 2px;
+-  }
+-}
+-
+-.hero {
+-  position: relative;
+-
+-  .base,
+-  .framework,
+-  .vite {
+-    inset-inline: 0;
+-    margin: 0 auto;
+-  }
+-
+-  .base {
+-    width: 170px;
+-    position: relative;
+-    z-index: 0;
+-  }
+-
+-  .framework,
+-  .vite {
+-    position: absolute;
+-  }
+-
+-  .framework {
+-    z-index: 1;
+-    top: 34px;
+-    height: 28px;
+-    transform: perspective(2000px) rotateZ(300deg) rotateX(44deg) rotateY(39deg)
+-      scale(1.4);
+-  }
+-
+-  .vite {
+-    z-index: 0;
+-    top: 107px;
+-    height: 26px;
+-    width: auto;
+-    transform: perspective(2000px) rotateZ(300deg) rotateX(40deg) rotateY(39deg)
+-      scale(0.8);
+-  }
+-}
+-
+-#center {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 25px;
+-  place-content: center;
+-  place-items: center;
+-  flex-grow: 1;
+-
+-  @media (max-width: 1024px) {
+-    padding: 32px 20px 24px;
+-    gap: 18px;
+-  }
+-}
+-
+-#next-steps {
+-  display: flex;
+-  border-top: 1px solid var(--border);
+-  text-align: left;
+-
+-  & > div {
+-    flex: 1 1 0;
+-    padding: 32px;
+-    @media (max-width: 1024px) {
+-      padding: 24px 20px;
+-    }
+-  }
+-
+-  .icon {
+-    margin-bottom: 16px;
+-    width: 22px;
+-    height: 22px;
+-  }
+-
+-  @media (max-width: 1024px) {
+-    flex-direction: column;
+-    text-align: center;
+-  }
+-}
+-
+-#docs {
+-  border-right: 1px solid var(--border);
+-
+-  @media (max-width: 1024px) {
+-    border-right: none;
+-    border-bottom: 1px solid var(--border);
+-  }
+-}
+-
+-#next-steps ul {
+-  list-style: none;
+-  padding: 0;
+-  display: flex;
+-  gap: 8px;
+-  margin: 32px 0 0;
+-
+-  .logo {
+-    height: 18px;
+-  }
+-
+-  a {
+-    color: var(--text-h);
+-    font-size: 16px;
+-    border-radius: 6px;
+-    background: var(--social-bg);
+-    display: flex;
+-    padding: 6px 12px;
+-    align-items: center;
+-    gap: 8px;
+-    text-decoration: none;
+-    transition: box-shadow 0.3s;
+-
+-    &:hover {
+-      box-shadow: var(--shadow);
+-    }
+-    .button-icon {
+-      height: 18px;
+-      width: 18px;
+-    }
+-  }
+-
+-  @media (max-width: 1024px) {
+-    margin-top: 20px;
+-    flex-wrap: wrap;
+-    justify-content: center;
+-
+-    li {
+-      flex: 1 1 calc(50% - 8px);
+-    }
+-
+-    a {
+-      width: 100%;
+-      justify-content: center;
+-      box-sizing: border-box;
+-    }
+-  }
+-}
+-
+-#spacer {
+-  height: 88px;
+-  border-top: 1px solid var(--border);
+-  @media (max-width: 1024px) {
+-    height: 48px;
+-  }
+-}
+-
+-.ticks {
+-  position: relative;
+-  width: 100%;
+-
+-  &::before,
+-  &::after {
+-    content: '';
+-    position: absolute;
+-    top: -4.5px;
+-    border: 5px solid transparent;
+-  }
+-
+-  &::before {
+-    left: 0;
+-    border-left-color: var(--border);
+-  }
+-  &::after {
+-    right: 0;
+-    border-right-color: var(--border);
+-  }
+-}
+diff --git a/src/App.jsx b/src/App.jsx
+index 3b26eb5..17de22f 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -9,10 +9,11 @@ import { isSupabaseConfigured, supabase } from "./supabaseClient";
+ import {
+   loadValtrackData, upsertPlayerDb, upsertPlayersDb, deletePlayerDb,
+   upsertTournamentDb, upsertTeamDb, upsertMatchDb, setMatchAppliedDb,
+-  setTeamLogoDb, setHiddenTeamDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
++  setTeamLogoDb, setHiddenTeamDb, upsertOrganizationDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
+ } from "./valtrackDb";
+ import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
+-import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo, getTeamProfile } from "./domain/elo.js";
++import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo } from "./domain/elo.js";
++import { buildTeamPage } from "./domain/teamPage.js";
+ import { computeParticipation, resolveLineups, compactLineups, isPlayedMap, substitutionSummary } from "./domain/participation.js";
+ import { DEFAULT_DATA_FILTERS, tournamentYear, normalizedTeamName, filterTournamentScope, eligiblePlayerIdsForFilters, trimTournamentStatsForFilters, buildFilteredLeaderboardPlayers } from "./domain/filters.js";
+ import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
+@@ -1024,9 +1025,23 @@ function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = []
+ 
+ // ==================== tournaments ====================
+ 
+-function TeamModal({ team, players, onClose, onSave, onCreatePlayer }) {
++function TeamModal({ team, players, organizations = [], organizationsEnabled = false, onClose, onSave, onCreatePlayer }) {
+   const isEdit = !!team;
+   const [name, setName] = useState(team?.name || "");
++  // "auto" = l'organisation qui porte ce nom (créée si elle n'existe pas encore)
++  const [orgChoice, setOrgChoice] = useState(team?.organizationId || "auto");
++  const sortedOrgs = [...organizations].sort((a, b) => a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
++  const autoOrg = organizations.find((o) => normalizedTeamName(o.name) === normalizedTeamName(name));
++
++  const save = () => {
++    if (!name.trim()) return;
++    const base = { id: team?.id || uid(), name: name.trim(), playerIds, eliminated: team?.eliminated || false };
++    if (!organizationsEnabled) { onSave({ ...base, organizationId: team?.organizationId || null }); return; }
++    if (orgChoice !== "auto") { onSave({ ...base, organizationId: orgChoice }); return; }
++    if (autoOrg) { onSave({ ...base, organizationId: autoOrg.id }); return; }
++    const created = { id: "org_" + uid(), name: name.trim(), rosterOverride: null };
++    onSave({ ...base, organizationId: created.id }, created);
++  };
+   const [playerIds, setPlayerIds] = useState(team?.playerIds || []);
+   const [search, setSearch] = useState("");
+   const [newPlayerName, setNewPlayerName] = useState("");
+@@ -1047,6 +1062,17 @@ function TeamModal({ team, players, onClose, onSave, onCreatePlayer }) {
+       <Field label="Nom de l'équipe *">
+         <input className="vt-input" style={{ width: "100%" }} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+       </Field>
++      {organizationsEnabled && (
++        <Field label="Organisation">
++          <select className="vt-select" style={{ width: "100%" }} value={orgChoice} onChange={(e) => setOrgChoice(e.target.value)}>
++            <option value="auto">{autoOrg ? `Automatique : ${autoOrg.name}` : "Automatique : nouvelle organisation avec ce nom"}</option>
++            {sortedOrgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
++          </select>
++          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
++            Choisis une organisation existante si l'équipe a changé de nom : elle garde alors son historique.
++          </div>
++        </Field>
++      )}
+ 
+       <div className="vt-label" style={{ margin: "14px 0 8px" }}>Créer un nouveau joueur et l'ajouter</div>
+       <div style={{ display: "flex", gap: 8 }}>
+@@ -1071,7 +1097,7 @@ function TeamModal({ team, players, onClose, onSave, onCreatePlayer }) {
+         <button className="vt-btn vt-cut-sm" onClick={onClose}>Annuler</button>
+         <button
+           className="vt-btn vt-btn-primary vt-cut-sm"
+-          onClick={() => { if (name.trim()) onSave({ id: team?.id || uid(), name: name.trim(), playerIds, eliminated: team?.eliminated || false }); }}
++          onClick={save}
+         >
+           {isEdit ? "Enregistrer" : "Créer l'équipe"}
+         </button>
+@@ -2019,8 +2045,8 @@ function RecordsView({ tournaments, players, filters, onFiltersChange }) {
+   );
+ }
+ 
+-function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
+-  const ranking = useMemo(() => computeTeamElo(tournaments), [tournaments]);
++function TeamsLeaderboard({ tournaments, players = [], organizations = [], teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
++  const ranking = useMemo(() => computeTeamElo(tournaments, undefined, organizations), [tournaments, organizations]);
+   const playerNames = useMemo(() => new Map(players.map((p) => [p.id, p.name])), [players]);
+   const hiddenSet = new Set(hiddenTeams);
+   const visible = ranking.filter((t) => !hiddenSet.has(t.name.trim().toLowerCase()));
+@@ -2054,9 +2080,9 @@ function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, o
+           const last = team.history[team.history.length - 1];
+           return (
+             <div
+-              key={team.name} className="vt-row"
++              key={team.key} className="vt-row"
+               style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderBottom: i < visible.length - 1 ? "1px solid var(--line)" : "none", cursor: "pointer" }}
+-              onClick={() => onOpenTeam(team.name)}
++              onClick={() => onOpenTeam(team.key)}
+             >
+               <div className={"vt-display vt-mono " + medal} style={{ fontSize: 18, fontWeight: 700, width: 26, flexShrink: 0 }}>{rank}</div>
+               {logo && <img src={logo} className="vt-logo" alt="" />}
+@@ -2094,7 +2120,7 @@ function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, o
+           <div className="vt-label" style={{ marginBottom: 8 }}>Équipes retirées ({hidden.length})</div>
+           <div className="vt-panel vt-cut" style={{ padding: 4 }}>
+             {hidden.map((team, i) => (
+-              <div key={team.name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", opacity: 0.6, borderBottom: i < hidden.length - 1 ? "1px solid var(--line)" : "none" }}>
++              <div key={team.key} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", opacity: 0.6, borderBottom: i < hidden.length - 1 ? "1px solid var(--line)" : "none" }}>
+                 <div style={{ flex: 1 }} className="vt-display">{team.name}</div>
+                 <div className="vt-mono">{Math.round(team.elo)}</div>
+                 <button className="vt-btn vt-cut-sm" style={{ padding: "5px 9px", fontSize: 11 }} onClick={() => onToggleHidden(team.name)}>
+@@ -2109,8 +2135,119 @@ function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, o
+   );
+ }
+ 
+-function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, onToggleHidden, onBack, onOpenPlayer }) {
+-  const data = useMemo(() => getTeamProfile(nameKey, tournaments, players), [nameKey, tournaments, players]);
++// ---------- page équipe ----------
++const MEMBER_COLUMNS = [
++  { key: "match", label: "Matchs", decimals: 0 },
++  { key: "maps", label: "Maps", decimals: 0 },
++  { key: "round", label: "Rounds", decimals: 0 },
++  { key: "rating", label: "Rating", decimals: 2 },
++  { key: "acs", label: "ACS", decimals: 0 },
++  { key: "kd", label: "KD", decimals: 2 },
++  { key: "kast", label: "KAST", decimals: 0, suffix: "%" },
++];
++
++function formatPeriod(since, until, active) {
++  if (active) return since ? `depuis ${since}` : "—";
++  if (since && until && since !== until) return `${since} → ${until}`;
++  return since || until || "—";
++}
++
++function MemberTable({ rows, active, onOpenPlayer, detailed }) {
++  const extra = detailed ? [
++    { label: "FK / FD", render: (s) => `${num(s.fk)} / ${num(s.fd)}` },
++    { label: "Clutch", render: (s) => num(s.clutch) },
++    { label: "Multi", render: (s) => num(s.multiKill) },
++    { label: "MVP / MJ", render: (s) => `${num(s.mvp)} / ${num(s.mj)}` },
++  ] : [];
++  return (
++    <div className="vt-panel vt-cut vt-scroll" style={{ overflowX: "auto", marginBottom: 22 }}>
++      <table style={{ width: "100%", borderCollapse: "collapse", minWidth: detailed ? 1150 : 860 }}>
++        <thead>
++          <tr style={{ borderBottom: "1px solid var(--line)" }}>
++            <th className="vt-th" style={{ padding: "9px 12px", textAlign: "left", cursor: "default" }}>Joueur</th>
++            <th className="vt-th" style={{ padding: "9px 12px", textAlign: "right", cursor: "default" }}>Elo</th>
++            <th className="vt-th" style={{ padding: "9px 12px", textAlign: "left", cursor: "default" }}>{active ? "Arrivée" : "Période"}</th>
++            {MEMBER_COLUMNS.map((c) => <th key={c.key} className="vt-th" style={{ padding: "9px 12px", textAlign: "right", cursor: "default" }}>{c.label}</th>)}
++            {extra.map((c) => <th key={c.label} className="vt-th" style={{ padding: "9px 12px", textAlign: "right", cursor: "default" }}>{c.label}</th>)}
++            <th className="vt-th" style={{ padding: "9px 12px", textAlign: "left", cursor: "default" }}>Trophées</th>
++          </tr>
++        </thead>
++        <tbody>
++          {rows.map((r) => (
++            <tr key={r.id} className="vt-row" style={{ borderBottom: "1px solid var(--line)", cursor: "pointer" }} onClick={() => onOpenPlayer(r.id)}>
++              <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
++                <span className="vt-display" style={{ fontWeight: 600, fontSize: 15 }}>{r.player?.name || "?"}</span>
++                {r.substitute && <span className="vt-label" style={{ marginLeft: 8 }}>Remplaçant</span>}
++              </td>
++              <td className="vt-mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>{Math.round(r.elo)}</td>
++              <td style={{ padding: "10px 12px", fontSize: 12, color: "var(--text-dim)", whiteSpace: "nowrap" }}>{formatPeriod(r.since, r.until, active)}</td>
++              {MEMBER_COLUMNS.map((c) => (
++                <td key={c.key} className="vt-mono" style={{ padding: "10px 12px", textAlign: "right" }}>
++                  {num(r.stats.match) > 0 || ["match", "maps", "round"].includes(c.key) ? fmtStat(r.stats[c.key], c) : "—"}
++                </td>
++              ))}
++              {extra.map((c) => <td key={c.label} className="vt-mono" style={{ padding: "10px 12px", textAlign: "right" }}>{c.render(r.stats)}</td>)}
++              <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
++                {r.trophies.length === 0 ? <span style={{ color: "var(--text-dim)" }}>—</span> : r.trophies.map((t, i) => (
++                  <span key={i} title={`${t.type} — ${t.tournamentName}`} style={{ marginRight: 4 }}><Trophy size={13} color={TROPHY_COLOR[t.type] || TROPHY_COLOR.Autre} /></span>
++                ))}
++              </td>
++            </tr>
++          ))}
++        </tbody>
++      </table>
++    </div>
++  );
++}
++
++function RosterEditModal({ teamName, organization, players, currentIds, onClose, onSave }) {
++  const [name, setName] = useState(organization?.name || teamName);
++  const [selected, setSelected] = useState(currentIds);
++  const [search, setSearch] = useState("");
++  const toggle = (id) => setSelected((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
++  const filtered = players
++    .filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
++    .sort((a, b) => Number(selected.includes(b.id)) - Number(selected.includes(a.id)) || a.name.localeCompare(b.name, "fr", { sensitivity: "base" }));
++  return (
++    <ModalShell title={`Roster actif — ${teamName}`} onClose={onClose} wide>
++      <Field label="Nom de l'organisation">
++        <input className="vt-input" style={{ width: "100%" }} value={name} onChange={(e) => setName(e.target.value)} />
++      </Field>
++      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 10 }}>
++        Par défaut, le roster actif vient du dernier tournoi de l'équipe. Corrige-le ici si besoin
++        (joueur signé qui n'a encore rien joué, départ…). Les 5 joueurs qui ont le plus joué
++        récemment comptent pour l'Elo de l'équipe, les autres apparaissent comme remplaçants.
++      </div>
++      <div className="vt-label" style={{ marginBottom: 6 }}>Joueurs ({selected.length})</div>
++      <input className="vt-input" style={{ width: "100%", marginBottom: 8 }} placeholder="Rechercher un joueur…" value={search} onChange={(e) => setSearch(e.target.value)} />
++      <div className="vt-panel vt-cut-sm vt-scroll" style={{ maxHeight: 260, overflowY: "auto" }}>
++        {filtered.map((p) => (
++          <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: "1px solid var(--line)", cursor: "pointer" }}>
++            <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} />
++            <span className="vt-display" style={{ fontSize: 14 }}>{p.name}</span>
++            {currentTeam(p) && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>({currentTeam(p)})</span>}
++          </label>
++        ))}
++      </div>
++      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
++        <button className="vt-btn vt-cut-sm" onClick={() => onSave({ ...organization, name: name.trim() || teamName, rosterOverride: null })}>
++          Revenir au roster automatique
++        </button>
++        <div style={{ display: "flex", gap: 8 }}>
++          <button className="vt-btn vt-cut-sm" onClick={onClose}>Annuler</button>
++          <button className="vt-btn vt-btn-primary vt-cut-sm" onClick={() => onSave({ ...organization, name: name.trim() || teamName, rosterOverride: selected })}>Enregistrer</button>
++        </div>
++      </div>
++    </ModalShell>
++  );
++}
++
++function TeamProfile({ teamKey, tournaments, players, organizations, organizationsEnabled, playerElo, teamLogos, hiddenTeams, onToggleHidden, onBack, onOpenPlayer, onSaveOrganization }) {
++  const data = useMemo(
++    () => buildTeamPage(teamKey, tournaments, players, { organizations, playerElo }),
++    [teamKey, tournaments, players, organizations, playerElo],
++  );
++  const [editingRoster, setEditingRoster] = useState(false);
+ 
+   if (!data) {
+     return (
+@@ -2121,12 +2258,14 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
+     );
+   }
+ 
+-  const { entry, rank, wins, losses, bestGain, worstLoss, trophies, roster, recent } = data;
++  const { entry, rank, wins, losses, bestGain, worstLoss, recent, active, former, palmares } = data;
++  const playerName = (id) => players.find((p) => p.id === id)?.name || "?";
+   const logo = getLogo(teamLogos, entry.name);
+   const isHidden = hiddenTeams.includes(entry.name.trim().toLowerCase());
+   const totalGames = wins + losses;
+   const winRate = totalGames ? Math.round((wins / totalGames) * 100) : 0;
+   const pct = Math.round((entry.elo / ELO_MAX) * 100);
++  const canEditRoster = organizationsEnabled && Boolean(entry.organization);
+ 
+   return (
+     <div>
+@@ -2138,7 +2277,7 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
+             {logo && <img src={logo} className="vt-logo-lg" alt="" />}
+             <div>
+               <h1 className="vt-display" style={{ fontSize: 30, fontWeight: 700, textTransform: "uppercase" }}>{entry.name}</h1>
+-              <div style={{ fontSize: 13, color: "var(--text-dim)" }}>#{rank} au classement Elo</div>
++              <div style={{ fontSize: 13, color: "var(--text-dim)" }}>#{rank} au classement Elo · Elo du roster actuel</div>
+             </div>
+           </div>
+           <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+@@ -2160,9 +2299,51 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
+         <StatCard label="Victoires" value={wins} accent="var(--green)" />
+         <StatCard label="Défaites" value={losses} accent="var(--red)" />
+         <StatCard label="Taux de victoire" value={winRate + "%"} />
++        <StatCard label="Trophées" value={palmares.length} accent="var(--gold)" />
++      </div>
++
++      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
++        <div className="vt-label">
++          Roster actif{entry.manualRoster && <span style={{ color: "var(--steel)", marginLeft: 8 }}>· corrigé à la main</span>}
++        </div>
++        {canEditRoster ? (
++          <button className="vt-btn vt-cut-sm" style={{ padding: "5px 9px", fontSize: 11 }} onClick={() => setEditingRoster(true)}><UserCog size={12} /> Modifier le roster</button>
++        ) : (
++          <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Correction manuelle disponible après le script SQL de l'étape C</span>
++        )}
+       </div>
++      {active.length === 0 ? (
++        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun joueur.</div>
++      ) : <MemberTable rows={active} active onOpenPlayer={onOpenPlayer} />}
++
++      <div className="vt-label" style={{ marginBottom: 8 }}>Palmarès</div>
++      {palmares.length === 0 ? (
++        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun tournoi remporté pour l'instant.</div>
++      ) : (
++        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
++          {[...palmares].sort((a, b) => (TROPHY_RANK[b.type] ?? 0) - (TROPHY_RANK[a.type] ?? 0) || String(b.date).localeCompare(String(a.date))).map((t, i, arr) => {
++            const c = TROPHY_COLOR[t.type] || TROPHY_COLOR.Autre;
++            return (
++              <div key={t.tournamentId} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", padding: "10px 16px", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }}>
++                <span className="vt-display" style={{ fontWeight: 600, color: c, display: "inline-flex", alignItems: "center", gap: 6 }}>
++                  <Trophy size={14} color={c} /> {t.type} — {t.tournamentName}
++                  {t.date && <span className="vt-mono" style={{ fontSize: 11, color: "var(--text-dim)", fontWeight: 400 }}>{t.date.slice(0, 4)}</span>}
++                </span>
++                <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t.playerIds.map(playerName).join(" · ")}</span>
++              </div>
++            );
++          })}
++        </div>
++      )}
++
++      <div className="vt-label" style={{ marginBottom: 4 }}>Anciens joueurs ({former.length})</div>
++      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
++        Stats calculées uniquement sur leurs matchs avec {entry.name} (tous les matchs enregistrés).
++      </div>
++      {former.length === 0 ? (
++        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun ancien joueur.</div>
++      ) : <MemberTable rows={former} detailed onOpenPlayer={onOpenPlayer} />}
+ 
+-      <div className="vt-label" style={{ marginBottom: 8 }}>Records</div>
+       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 10, marginBottom: 22 }}>
+         <div className="vt-panel vt-cut-sm" style={{ padding: 14 }}>
+           <div className="vt-label" style={{ marginBottom: 8 }}>Plus gros gain Elo</div>
+@@ -2171,7 +2352,7 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
+               <div className="vt-mono" style={{ color: "var(--green)", fontWeight: 700, fontSize: 20 }}>+{Math.round(bestGain.delta)}</div>
+               <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>vs {bestGain.opponentName} — {bestGain.tournamentName} · {bestGain.matchLabel}</div>
+             </>
+-          ) : <div style={{ color: "var(--text-dim)", fontSize: 13 }}>Aucun match enregistré.</div>}
++          ) : <div style={{ color: "var(--text-dim)", fontSize: 13 }}>Aucune victoire enregistrée.</div>}
+         </div>
+         <div className="vt-panel vt-cut-sm" style={{ padding: 14 }}>
+           <div className="vt-label" style={{ marginBottom: 8 }}>Plus grosse perte Elo</div>
+@@ -2180,32 +2361,15 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
+               <div className="vt-mono" style={{ color: "var(--red)", fontWeight: 700, fontSize: 20 }}>{Math.round(worstLoss.delta)}</div>
+               <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>vs {worstLoss.opponentName} — {worstLoss.tournamentName} · {worstLoss.matchLabel}</div>
+             </>
+-          ) : <div style={{ color: "var(--text-dim)", fontSize: 13 }}>Aucun match enregistré.</div>}
++          ) : <div style={{ color: "var(--text-dim)", fontSize: 13 }}>Aucune défaite enregistrée.</div>}
+         </div>
+       </div>
+ 
+-      <div className="vt-label" style={{ marginBottom: 8 }}>Palmarès</div>
+-      {trophies.length === 0 ? (
+-        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun tournoi remporté pour l'instant.</div>
+-      ) : (
+-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 22 }}>
+-          {trophies.map((t, i) => {
+-            const c = TROPHY_COLOR[t.tournamentType] || TROPHY_COLOR.Autre;
+-            return (
+-              <div key={i} className="vt-trophy-pill vt-cut-sm" style={{ borderColor: c }}>
+-                <Trophy size={14} color={c} />
+-                <span className="vt-display" style={{ fontSize: 13, fontWeight: 600, color: c }}>{t.tournamentType} — {t.tournamentName}</span>
+-              </div>
+-            );
+-          })}
+-        </div>
+-      )}
+-
+       <div className="vt-label" style={{ marginBottom: 8 }}>Historique récent</div>
+       {recent.length === 0 ? (
+-        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun événement enregistré.</div>
++        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14 }}>Aucun événement enregistré.</div>
+       ) : (
+-        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
++        <div className="vt-panel vt-cut" style={{ padding: 4 }}>
+           {recent.map((h, i) => (
+             <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: i < recent.length - 1 ? "1px solid var(--line)" : "none" }}>
+               <div>
+@@ -2228,35 +2392,15 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
+         </div>
+       )}
+ 
+-      <div className="vt-label" style={{ marginBottom: 8 }}>Roster actuel</div>
+-      {entry.roster.length === 0 ? (
+-        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun joueur.</div>
+-      ) : (
+-        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
+-          {[...entry.roster.map((r) => ({ ...r, sub: false })), ...entry.substitutes.map((id) => ({ id, elo: null, sub: true }))].map((r, i, arr) => {
+-            const p = players.find((x) => x.id === r.id);
+-            if (!p) return null;
+-            return (
+-              <div key={r.id} className="vt-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", cursor: "pointer", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }} onClick={() => onOpenPlayer(r.id)}>
+-                <span className="vt-display" style={{ fontWeight: 600 }}>
+-                  {p.name}{r.sub && <span className="vt-label" style={{ marginLeft: 8 }}>Remplaçant</span>}
+-                </span>
+-                {!r.sub && <span className="vt-mono" style={{ fontWeight: 700 }}>{Math.round(r.elo)}</span>}
+-              </div>
+-            );
+-          })}
+-        </div>
+-      )}
+-
+-      <div className="vt-label" style={{ marginBottom: 8 }}>Joueurs passés par cette équipe</div>
+-      {roster.length === 0 ? (
+-        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14 }}>Aucun joueur enregistré.</div>
+-      ) : (
+-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+-          {roster.map((p) => (
+-            <button key={p.id} className="vt-btn vt-cut-sm" onClick={() => onOpenPlayer(p.id)}>{p.name}</button>
+-          ))}
+-        </div>
++      {editingRoster && (
++        <RosterEditModal
++          teamName={entry.name}
++          organization={entry.organization}
++          players={players}
++          currentIds={active.map((r) => r.id)}
++          onClose={() => setEditingRoster(false)}
++          onSave={(org) => { onSaveOrganization(org); setEditingRoster(false); }}
++        />
+       )}
+     </div>
+   );
+@@ -2277,6 +2421,8 @@ export default function App() {
+   const [teamLogos, setTeamLogos] = useState({});
+   const [tournaments, setTournaments] = useState([]);
+   const [hiddenTeams, setHiddenTeams] = useState([]);
++  const [organizations, setOrganizations] = useState([]);
++  const [organizationsEnabled, setOrganizationsEnabled] = useState(false);
+   const [loaded, setLoaded] = useState(false);
+   const [saveError, setSaveError] = useState("");
+   const [session, setSession] = useState(null);
+@@ -2354,6 +2500,8 @@ export default function App() {
+         setTournaments((data.tournaments || []).map(migrateTournament));
+         setTeamLogos(data.teamLogos || {});
+         setHiddenTeams(data.hiddenTeams || []);
++        setOrganizations(data.organizations || []);
++        setOrganizationsEnabled(Boolean(data.organizationsEnabled));
+         setSaveError("");
+ 
+         // Les logos sont chargés après les données essentielles. Ils peuvent donc apparaître
+@@ -2394,9 +2542,9 @@ export default function App() {
+     scrollPositions.current.tournaments = window.scrollY;
+     setView({ name: "tournament", id });
+   };
+-  const openTeam = (teamName) => {
++  const openTeam = (teamKey) => {
+     scrollPositions.current.teams = window.scrollY;
+-    setView({ name: "team", key: normalizedTeamName(teamName) });
++    setView({ name: "team", key: teamKey });
+   };
+   const backToLeaderboard = () => setView({ name: "leaderboard" });
+   const backToTournaments = () => setView({ name: "tournaments" });
+@@ -2429,6 +2577,11 @@ export default function App() {
+     );
+   };
+ 
++  const saveOrganization = (org) => {
++    setOrganizations((prev) => (prev.some((o) => o.id === org.id) ? prev.map((o) => (o.id === org.id ? org : o)) : [...prev, org]));
++    persist(() => upsertOrganizationDb(org), `la sauvegarde de l'organisation ${org.name}`);
++  };
++
+   const toggleHiddenTeam = (teamName) => {
+     const key = teamName.trim().toLowerCase();
+     const willBeHidden = !hiddenTeams.includes(key);
+@@ -2516,7 +2669,9 @@ export default function App() {
+     persist(() => upsertTournamentDb(t), `la sauvegarde du tournoi ${t.name}`);
+   };
+ 
+-  const saveTeam = (tournamentId, team) => {
++  const saveTeam = (tournamentId, team, newOrganization = null) => {
++    // l'organisation doit exister avant l'équipe qui la référence (les écritures sont en file)
++    if (newOrganization) saveOrganization(newOrganization);
+     setTournaments((prev) => prev.map((t) => {
+       if (t.id !== tournamentId) return t;
+       const idx = t.teams.findIndex((x) => x.id === team.id);
+@@ -2758,12 +2913,16 @@ export default function App() {
+         </div>
+ 
+         {view.name === "records" && <RecordsView tournaments={tournaments} players={players} filters={dataFilters} onFiltersChange={setDataFilters} />}
+-        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} players={players} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
++        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} players={players} organizations={organizations} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
+         {view.name === "team" && (
+           <TeamProfile
+-            nameKey={view.key}
++            teamKey={view.key}
+             tournaments={tournaments}
+             players={players}
++            organizations={organizations}
++            organizationsEnabled={organizationsEnabled}
++            playerElo={playerElo}
++            onSaveOrganization={saveOrganization}
+             teamLogos={teamLogos}
+             hiddenTeams={hiddenTeams}
+             onToggleHidden={toggleHiddenTeam}
+@@ -2865,9 +3024,11 @@ export default function App() {
+           tournament={activeTournament}
+           team={editingTeam}
+           players={players}
++          organizations={organizations}
++          organizationsEnabled={organizationsEnabled}
+           onCreatePlayer={quickCreatePlayer}
+           onClose={() => { setModal(null); setEditingTeam(null); }}
+-          onSave={(team) => saveTeam(activeTournament.id, team)}
++          onSave={(team, newOrganization) => saveTeam(activeTournament.id, team, newOrganization)}
+         />
+       )}
+       {modal === "addTournamentMatch" && activeTournament && (
+diff --git a/src/domain/elo.js b/src/domain/elo.js
+index 50cd59c..6fffa7e 100644
+--- a/src/domain/elo.js
++++ b/src/domain/elo.js
+@@ -89,7 +89,12 @@ export function chronologicalTournaments(tournaments) {
+   return [...(tournaments || [])].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+ }
+ 
+-const teamKey = (name) => String(name || "").trim().toLowerCase();
++// Identité d'une équipe dans le temps : son organisation si elle est rattachée à une, sinon
++// son nom (casse et espaces ignorés), comme avant l'étape C.
++export function orgKeyOf(team) {
++  if (team?.organizationId) return team.organizationId;
++  return "name:" + String(team?.name || "").trim().toLowerCase();
++}
+ 
+ // Rejoue tous les matchs et renvoie :
+ //   players : Map playerId → { elo, history[] }
+@@ -102,10 +107,10 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
+     if (!players.has(id)) players.set(id, { elo: config.start, history: [] });
+     return players.get(id);
+   };
+-  const teamEntry = (name) => {
+-    const key = teamKey(name);
+-    if (!teams.has(key)) teams.set(key, { name, history: [] });
+-    teams.get(key).name = name; // garde la dernière écriture du nom
++  const teamEntry = (team) => {
++    const key = orgKeyOf(team);
++    if (!teams.has(key)) teams.set(key, { name: team.name, history: [] });
++    teams.get(key).name = team.name; // garde le dernier nom utilisé
+     return teams.get(key);
+   };
+ 
+@@ -171,7 +176,7 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
+           teamWeight += w;
+         });
+ 
+-        teamEntry(sides[side].name).history.push({
++        teamEntry(sides[side]).history.push({
+           type: "match", tournamentName: t.name, matchLabel: m.label, opponentName: opponent.name,
+           result: won ? "W" : "L", delta: teamWeight ? teamDeltaSum / teamWeight : 0,
+           strengthBefore: side === "A" ? strengthA : strengthB,
+@@ -190,7 +195,7 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
+           entry.elo = clamp(before + bonus);
+           entry.history.push({ type: "trophy", tournamentId: t.id, tournamentName: t.name, tournamentType: t.type, teamName: winnerTeam.name, delta: entry.elo - before, eloAfter: entry.elo });
+         });
+-        teamEntry(winnerTeam.name).history.push({ type: "trophy", tournamentName: t.name, tournamentType: t.type, delta: bonus });
++        teamEntry(winnerTeam).history.push({ type: "trophy", tournamentName: t.name, tournamentType: t.type, delta: bonus });
+       }
+     }
+   });
+@@ -198,46 +203,57 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
+   return { players, teams };
+ }
+ 
+-// Les 5 joueurs principaux d'une équipe : son dernier tournoi, classés par maps jouées dans ce
+-// tournoi (un remplaçant passe donc après les titulaires).
+-export function currentMainRoster(name, tournaments, config = ELO_CONFIG) {
+-  const key = teamKey(name);
++// Les 5 joueurs principaux d'une organisation : son dernier tournoi, classés par maps jouées
++// dans ce tournoi (un remplaçant passe donc après les titulaires). Si un roster a été corrigé à
++// la main (rosterOverride), c'est lui qui fait foi.
++export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterOverride = null) {
+   const ordered = chronologicalTournaments(tournaments);
+-  for (let i = ordered.length - 1; i >= 0; i--) {
+-    const t = ordered[i];
+-    const team = t.teams.find((x) => teamKey(x.name) === key);
+-    if (!team) continue;
+-    const mapsPlayed = new Map(team.playerIds.map((id) => [id, 0]));
+-    (t.matches || []).forEach((m) => {
+-      if (m.teamAId !== team.id && m.teamBId !== team.id) return;
+-      const teamA = t.teams.find((x) => x.id === m.teamAId);
+-      const teamB = t.teams.find((x) => x.id === m.teamBId);
+-      const side = m.teamAId === team.id ? "A" : "B";
++  let last = null;
++  for (let i = ordered.length - 1; i >= 0 && !last; i--) {
++    const team = ordered[i].teams.find((x) => orgKeyOf(x) === key);
++    if (team) last = { tournament: ordered[i], team };
++  }
++  const mapsPlayed = new Map();
++  if (last) {
++    (last.tournament.matches || []).forEach((m) => {
++      if (m.teamAId !== last.team.id && m.teamBId !== last.team.id) return;
++      const teamA = last.tournament.teams.find((x) => x.id === m.teamAId);
++      const teamB = last.tournament.teams.find((x) => x.id === m.teamBId);
++      const side = m.teamAId === last.team.id ? "A" : "B";
+       computeParticipation(m, teamA, teamB).forEach((p, id) => {
+-        if (p.side === side && mapsPlayed.has(id)) mapsPlayed.set(id, mapsPlayed.get(id) + Math.max(1, p.maps));
++        if (p.side === side) mapsPlayed.set(id, (mapsPlayed.get(id) || 0) + Math.max(1, p.maps));
+       });
+     });
+-    const sorted = [...team.playerIds].sort((a, b) => mapsPlayed.get(b) - mapsPlayed.get(a));
+-    return { tournament: t, team, main: sorted.slice(0, config.mainPlayers), others: sorted.slice(config.mainPlayers) };
+   }
+-  return null;
++  const candidates = rosterOverride?.length ? rosterOverride : (last?.team.playerIds || []);
++  if (!candidates.length) return null;
++  const sorted = [...candidates].sort((a, b) => (mapsPlayed.get(b) || 0) - (mapsPlayed.get(a) || 0));
++  return {
++    tournament: last?.tournament || null, team: last?.team || null, manual: Boolean(rosterOverride?.length),
++    main: sorted.slice(0, config.mainPlayers), others: sorted.slice(config.mainPlayers),
++  };
+ }
+ 
+ // Classement des équipes : Elo actuel = moyenne des Elo des 5 joueurs principaux.
+-export function computeTeamElo(tournaments, config = ELO_CONFIG) {
++export function computeTeamElo(tournaments, config = ELO_CONFIG, organizations = []) {
+   const { players, teams } = computeEloState(tournaments, config);
++  const orgs = new Map((organizations || []).map((o) => [o.id, o]));
+   const names = new Map();
+-  chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => names.set(teamKey(team.name), team.name)));
++  chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => names.set(orgKeyOf(team), team.name)));
+ 
+   const ranking = [];
+-  names.forEach((name, key) => {
+-    const roster = currentMainRoster(name, tournaments, config);
++  names.forEach((lastName, key) => {
++    const org = orgs.get(key);
++    const roster = currentMainRoster(key, tournaments, config, org?.rosterOverride);
+     const main = roster?.main || [];
+     const playerElos = main.map((id) => ({ id, elo: players.get(id)?.elo ?? config.start }));
+     // une équipe qui n'a encore rien joué est quand même classée avec l'Elo de ses joueurs
+     const history = teams.get(key)?.history || [];
+-    const elo = playerElos.length ? playerElos.reduce((s, p) => s + p.elo, 0) / playerElos.length : config.start;
+-    ranking.push({ name, elo, history, roster: playerElos, substitutes: roster?.others || [] });
++    const elo = playerElos.length ? playerElos.reduce((sum, p) => sum + p.elo, 0) / playerElos.length : config.start;
++    ranking.push({
++      key, name: org?.name || lastName, elo, history, organization: org || null,
++      roster: playerElos, substitutes: roster?.others || [], manualRoster: Boolean(roster?.manual),
++    });
+   });
+   return ranking.sort((a, b) => b.elo - a.elo);
+ }
+@@ -245,28 +261,3 @@ export function computeTeamElo(tournaments, config = ELO_CONFIG) {
+ export function computePlayerElo(tournaments, config = ELO_CONFIG) {
+   return computeEloState(tournaments, config).players;
+ }
+-
+-// everything shown on a team's profile page: bilan, extremes, palmarès, roster, recent history
+-export function getTeamProfile(nameKey, tournaments, players) {
+-  const ranking = computeTeamElo(tournaments);
+-  const idx = ranking.findIndex((t) => t.name.trim().toLowerCase() === nameKey);
+-  if (idx === -1) return null;
+-  const entry = ranking[idx];
+-  const matches = entry.history.filter((h) => h.type === "match");
+-  const wins = matches.filter((h) => h.result === "W").length;
+-  const losses = matches.filter((h) => h.result === "L").length;
+-  const bestGain = matches.length ? matches.reduce((a, b) => (b.delta > a.delta ? b : a)) : null;
+-  const worstLoss = matches.length ? matches.reduce((a, b) => (b.delta < a.delta ? b : a)) : null;
+-  const trophies = entry.history.filter((h) => h.type === "trophy");
+-
+-  const playerIdSet = new Set();
+-  tournaments.forEach((t) => t.teams.forEach((team) => {
+-    if (team.name.trim().toLowerCase() === nameKey) team.playerIds.forEach((id) => playerIdSet.add(id));
+-  }));
+-  const roster = [...playerIdSet].map((id) => players.find((p) => p.id === id)).filter(Boolean);
+-
+-  return {
+-    entry, rank: idx + 1, wins, losses, bestGain, worstLoss, trophies, roster,
+-    recent: [...entry.history].reverse().slice(0, 12),
+-  };
+-}
+diff --git a/src/domain/stats.js b/src/domain/stats.js
+index 798b810..44da5f3 100644
+--- a/src/domain/stats.js
++++ b/src/domain/stats.js
+@@ -46,6 +46,7 @@ export const COUNTRIES = [
+ 
+ // canonical stat fields, in the exact order requested
+ export const STAT_FIELDS = [
++  { key: "elo", label: "Elo", decimals: 0 }, // calculé, affiché en premier
+   { key: "match", label: "Match", decimals: 0 },
+   { key: "maps", label: "Maps", decimals: 0 },
+   { key: "round", label: "Round", decimals: 0 },
+@@ -67,7 +68,6 @@ export const STAT_FIELDS = [
+   { key: "clutchPct", label: "Clutch %", decimals: 0, suffix: "%" },
+   { key: "mvp", label: "MVP", decimals: 0 },
+   { key: "mj", label: "MJ", decimals: 0 },
+-  { key: "elo", label: "Elo", decimals: 0 },
+ ];
+ 
+ export const HEADLINE_KEYS = ["elo", "rating", "acs", "kd", "kda", "kast", "clutchPct", "mvp", "mj"];
+diff --git a/src/domain/teamPage.js b/src/domain/teamPage.js
+new file mode 100644
+index 0000000..78c7f60
+--- /dev/null
++++ b/src/domain/teamPage.js
+@@ -0,0 +1,104 @@
++import { emptyStats, applyMatchToStats } from "./stats.js";
++import { computeParticipation } from "./participation.js";
++import { computeMvpMj } from "./records.js";
++import { ELO_CONFIG, computeTeamElo, chronologicalTournaments, orgKeyOf } from "./elo.js";
++
++const pickExtreme = (list, better) => (list.length ? list.reduce((a, b) => (better(a, b) ? b : a)) : null);
++const hasAnyValue = (row) => Object.values(row || {}).some((v) => v !== "" && v !== undefined && v !== null);
++
++// Tout ce qu'affiche la page d'une équipe (organisation) :
++//   - classement Elo, bilan, plus gros gain/perte, historique récent
++//   - roster actif (5 principaux + remplaçants) et anciens joueurs
++//   - pour chaque joueur, ses stats calculées UNIQUEMENT sur ses matchs avec cette équipe
++//   - palmarès, avec le roster qui a réellement gagné
++// Les stats par équipe utilisent tous les matchs enregistrés (appliqués au classement ou non),
++// comme les records et les MVP/MJ.
++export function buildTeamPage(key, tournaments, players, { organizations = [], playerElo = new Map(), config = ELO_CONFIG } = {}) {
++  const ranking = computeTeamElo(tournaments, config, organizations);
++  const rankIndex = ranking.findIndex((r) => r.key === key);
++  if (rankIndex === -1) return null;
++  const entry = ranking[rankIndex];
++  const playerById = new Map(players.map((p) => [p.id, p]));
++
++  const stints = new Map(); // playerId → { stats, mvp, mj, first, last, tournaments:Set, trophies:[] }
++  const stintOf = (id) => {
++    if (!stints.has(id)) stints.set(id, { stats: emptyStats(), mvp: 0, mj: 0, first: "", last: "", tournaments: new Set(), trophies: [] });
++    return stints.get(id);
++  };
++  const palmares = [];
++
++  chronologicalTournaments(tournaments).forEach((t) => {
++    const team = t.teams.find((x) => orgKeyOf(x) === key);
++    if (!team) return;
++
++    team.playerIds.forEach((id) => {
++      const s = stintOf(id);
++      s.tournaments.add(t.id);
++      if (t.date) {
++        if (!s.first || t.date < s.first) s.first = t.date;
++        if (!s.last || t.date > s.last) s.last = t.date;
++      }
++    });
++
++    (t.matches || []).forEach((m) => {
++      if (m.teamAId !== team.id && m.teamBId !== team.id) return;
++      const side = m.teamAId === team.id ? "A" : "B";
++      const teamA = t.teams.find((x) => x.id === m.teamAId);
++      const teamB = t.teams.find((x) => x.id === m.teamBId);
++      const participation = computeParticipation(m, teamA, teamB);
++      participation.forEach((p, id) => {
++        if (p.side !== side) return;
++        const row = m.stats?.[id];
++        if (!hasAnyValue(row)) return;
++        const s = stintOf(id);
++        s.stats = applyMatchToStats(s.stats, row);
++      });
++      const { mvpId, mjId } = computeMvpMj(m.stats, teamA);
++      if (mvpId && participation.get(mvpId)?.side === side) stintOf(mvpId).mvp += 1;
++      if (mjId && participation.get(mjId)?.side === side) stintOf(mjId).mj += 1;
++    });
++
++    if (t.finished && t.winnerTeamId === team.id) {
++      palmares.push({ tournamentId: t.id, tournamentName: t.name, type: t.type, date: t.date, playerIds: [...team.playerIds] });
++      team.playerIds.forEach((id) => stintOf(id).trophies.push({ tournamentName: t.name, type: t.type }));
++    }
++  });
++
++  const toRow = (id) => {
++    const s = stints.get(id) || stintOf(id);
++    return {
++      id,
++      player: playerById.get(id) || null,
++      elo: playerElo.get(id)?.elo ?? config.start,
++      stats: { ...s.stats, mvp: s.mvp, mj: s.mj },
++      since: s.first,
++      until: s.last,
++      tournaments: s.tournaments.size,
++      trophies: s.trophies,
++    };
++  };
++
++  const activeIds = [...entry.roster.map((r) => r.id), ...entry.substitutes];
++  const activeSet = new Set(activeIds);
++  const active = activeIds.map((id) => ({ ...toRow(id), substitute: !entry.roster.some((r) => r.id === id) }));
++  const former = [...stints.keys()]
++    .filter((id) => !activeSet.has(id))
++    .map(toRow)
++    .sort((a, b) => b.stats.match - a.stats.match || String(b.until).localeCompare(String(a.until)));
++
++  const matches = entry.history.filter((h) => h.type === "match");
++  return {
++    entry,
++    rank: rankIndex + 1,
++    wins: matches.filter((h) => h.result === "W").length,
++    losses: matches.filter((h) => h.result === "L").length,
++    bestGain: pickExtreme(matches.filter((h) => h.delta > 0), (a, b) => b.delta > a.delta),
++    worstLoss: pickExtreme(matches.filter((h) => h.delta < 0), (a, b) => b.delta < a.delta),
++    recent: [...entry.history].reverse().slice(0, 12),
++    active,
++    former,
++    palmares: palmares.reverse(),
++    // utilisé plus tard pour les Légendes du club
++    allMembers: [...stints.keys()].map(toRow),
++  };
++}
+diff --git a/src/domain/teamPage.test.js b/src/domain/teamPage.test.js
+new file mode 100644
+index 0000000..994cbdc
+--- /dev/null
++++ b/src/domain/teamPage.test.js
+@@ -0,0 +1,74 @@
++import { describe, it, expect } from "vitest";
++import { buildTeamPage } from "./teamPage.js";
++import { computeTeamElo, orgKeyOf } from "./elo.js";
++
++const P = (id) => ({ id, name: id.toUpperCase() });
++const players = ["a", "b", "c", "d", "e", "f", "g", "x"].map(P);
++const opp = (id) => ({ id, name: "Opp", playerIds: ["x"] });
++const row = (rating, kill) => ({ rating, kill, death: 10, maps: 2, round: 40 });
++
++// "a" joue 2 tournois chez DRX puis part chez T1 ; il garde ses stats DRX séparées
++const s1 = {
++  id: "s1", name: "Split 1", type: "Split", date: "2025-01-01", finished: true, winnerTeamId: "drx1",
++  teams: [{ id: "drx1", name: "DRX", playerIds: ["a", "b", "c", "d", "e"] }, opp("o1")],
++  matches: [{ id: "m1", teamAId: "drx1", teamBId: "o1", mapScores: [{ a: 13, b: 5 }, { a: 13, b: 7 }],
++    stats: { a: row(1.2, 30), b: row(1.0, 20), x: row(0.8, 15) } }],
++};
++const s2 = {
++  id: "s2", name: "Masters", type: "Masters", date: "2025-06-01",
++  teams: [{ id: "drx2", name: "drx ", playerIds: ["a", "b", "c", "d", "f", "g"] }, opp("o2")],
++  matches: [{ id: "m2", teamAId: "drx2", teamBId: "o2", mapScores: [{ a: 13, b: 5 }, { a: 13, b: 7 }],
++    stats: { a: row(1.0, 20) } }],
++};
++const s3 = {
++  id: "s3", name: "Split 2", type: "Split", date: "2026-01-01",
++  teams: [{ id: "drx3", name: "DRX", playerIds: ["b", "c", "d", "f", "g"] }, { id: "t1", name: "T1", playerIds: ["a"] }],
++  matches: [{ id: "m3", teamAId: "drx3", teamBId: "t1", mapScores: [{ a: 13, b: 5 }], stats: { a: row(2.0, 40), b: row(1.0, 10) } }],
++};
++const tournaments = [s1, s2, s3];
++const key = orgKeyOf({ name: "DRX" });
++
++describe("page équipe", () => {
++  const page = buildTeamPage(key, tournaments, players);
++
++  it("les stats d'un ancien joueur ne comptent que ses matchs avec l'équipe", () => {
++    const a = page.former.find((r) => r.id === "a");
++    expect(a.stats.match).toBe(2);
++    expect(a.stats.kill).toBe(50);
++    expect(a.stats.rating).toBeCloseTo(1.1);
++    expect(a.since).toBe("2025-01-01");
++    expect(a.until).toBe("2025-06-01");
++  });
++
++  it("le roster actif vient du dernier tournoi, les autres sont anciens", () => {
++    expect(page.active.map((r) => r.id).sort()).toEqual(["b", "c", "d", "f", "g"]);
++    expect(page.former.map((r) => r.id).sort()).toEqual(["a", "e"]);
++  });
++
++  it("le palmarès garde le roster qui a gagné", () => {
++    expect(page.palmares).toHaveLength(1);
++    expect(page.palmares[0].playerIds).toContain("e");
++    expect(page.former.find((r) => r.id === "e").trophies).toHaveLength(1);
++  });
++
++  it("MVP compté seulement dans l'équipe où il a été obtenu", () => {
++    expect(page.former.find((r) => r.id === "a").stats.mvp).toBe(2);
++  });
++
++  it("une organisation rattachée garde son historique même renommée", () => {
++    const withOrg = tournaments.map((t) => ({
++      ...t, teams: t.teams.map((team) => (team.id.startsWith("drx") ? { ...team, organizationId: "org_drx", name: t.id === "s3" ? "DRX Academy" : team.name } : team)),
++    }));
++    const ranking = computeTeamElo(withOrg, undefined, [{ id: "org_drx", name: "DRX" }]);
++    const drx = ranking.find((r) => r.key === "org_drx");
++    expect(drx.name).toBe("DRX");
++    expect(drx.history.filter((h) => h.type === "match")).toHaveLength(3);
++  });
++
++  it("un roster corrigé à la main remplace celui du dernier tournoi", () => {
++    const ranking = computeTeamElo(tournaments, undefined, [{ id: key, name: "DRX", rosterOverride: ["b", "c", "d", "f", "e"] }]);
++    const drx = ranking.find((r) => r.key === key);
++    expect(drx.manualRoster).toBe(true);
++    expect(drx.roster.map((r) => r.id).sort()).toEqual(["b", "c", "d", "e", "f"]);
++  });
++});
+diff --git a/src/index.css b/src/index.css
+index 2c84af0..825cf16 100644
+--- a/src/index.css
++++ b/src/index.css
+@@ -1,111 +1,34 @@
+-:root {
+-  --text: #6b6375;
+-  --text-h: #08060d;
+-  --bg: #fff;
+-  --border: #e5e4e7;
+-  --code-bg: #f4f3ec;
+-  --accent: #aa3bff;
+-  --accent-bg: rgba(170, 59, 255, 0.1);
+-  --accent-border: rgba(170, 59, 255, 0.5);
+-  --social-bg: rgba(244, 243, 236, 0.5);
+-  --shadow:
+-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+-
+-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+-  --mono: ui-monospace, Consolas, monospace;
+-
+-  font: 18px/145% var(--sans);
+-  letter-spacing: 0.18px;
+-  color-scheme: light dark;
+-  color: var(--text);
+-  background: var(--bg);
+-  font-synthesis: none;
+-  text-rendering: optimizeLegibility;
+-  -webkit-font-smoothing: antialiased;
+-  -moz-osx-font-smoothing: grayscale;
+-
+-  @media (max-width: 1024px) {
+-    font-size: 16px;
+-  }
+-}
+-
+-@media (prefers-color-scheme: dark) {
+-  :root {
+-    --text: #9ca3af;
+-    --text-h: #f3f4f6;
+-    --bg: #16171d;
+-    --border: #2e303a;
+-    --code-bg: #1f2028;
+-    --accent: #c084fc;
+-    --accent-bg: rgba(192, 132, 252, 0.15);
+-    --accent-border: rgba(192, 132, 252, 0.5);
+-    --social-bg: rgba(47, 48, 58, 0.5);
+-    --shadow:
+-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
+-  }
+-
+-  #social .button-icon {
+-    filter: invert(1) brightness(2);
+-  }
++/* Styles globaux minimaux : tout le design de ValTrack est dans App.jsx (.vt-root). */
++*,
++*::before,
++*::after {
++  box-sizing: border-box;
+ }
+ 
++html,
+ body {
+   margin: 0;
++  padding: 0;
++  background: #0A0E13;
++  color: #ECEFF3;
++  color-scheme: dark;
++  -webkit-font-smoothing: antialiased;
++  -moz-osx-font-smoothing: grayscale;
+ }
+ 
+ #root {
+-  width: 1126px;
+-  max-width: 100%;
+-  margin: 0 auto;
+-  text-align: center;
+-  border-inline: 1px solid var(--border);
+-  min-height: 100svh;
+-  display: flex;
+-  flex-direction: column;
+-  box-sizing: border-box;
++  min-height: 100vh;
+ }
+ 
+ h1,
+-h2 {
+-  font-family: var(--heading);
+-  font-weight: 500;
+-  color: var(--text-h);
+-}
+-
+-h1 {
+-  font-size: 56px;
+-  letter-spacing: -1.68px;
+-  margin: 32px 0;
+-  @media (max-width: 1024px) {
+-    font-size: 36px;
+-    margin: 20px 0;
+-  }
+-}
+-h2 {
+-  font-size: 24px;
+-  line-height: 118%;
+-  letter-spacing: -0.24px;
+-  margin: 0 0 8px;
+-  @media (max-width: 1024px) {
+-    font-size: 20px;
+-  }
+-}
++h2,
++h3,
+ p {
+   margin: 0;
+ }
+ 
+-code,
+-.counter {
+-  font-family: var(--mono);
+-  display: inline-flex;
+-  border-radius: 4px;
+-  color: var(--text-h);
+-}
+-
+-code {
+-  font-size: 15px;
+-  line-height: 135%;
+-  padding: 4px 8px;
+-  background: var(--code-bg);
++button,
++input,
++select {
++  font: inherit;
+ }
+diff --git a/src/valtrackDb.js b/src/valtrackDb.js
+index 402968b..51a8e20 100644
+--- a/src/valtrackDb.js
++++ b/src/valtrackDb.js
+@@ -199,15 +199,49 @@ const tournamentToRow = (t) => ({
+   updated_at: new Date().toISOString(),
+ });
+ 
++// Les organisations n'existent dans la base qu'après le script supabase/etape-c-organisations.sql.
++// Tant qu'il n'a pas été exécuté, l'appli regroupe les équipes par nom (comme avant) et
++// n'envoie jamais la colonne organization_id, pour ne pas faire échouer les sauvegardes.
++let organizationsEnabled = false;
++export const hasOrganizations = () => organizationsEnabled;
++
+ const teamToRow = (tournamentId, team) => ({
+   id: team.id,
+   tournament_id: tournamentId,
+   name: team.name || "",
+   player_ids: team.playerIds || [],
+   eliminated: Boolean(team.eliminated),
++  ...(organizationsEnabled ? { organization_id: team.organizationId || null } : {}),
++  updated_at: new Date().toISOString(),
++});
++
++const organizationToRow = (org) => ({
++  id: org.id,
++  name: org.name || "",
++  roster_override: org.rosterOverride?.length ? org.rosterOverride : null,
+   updated_at: new Date().toISOString(),
+ });
+ 
++async function loadOrganizations() {
++  const { error } = await supabase.from("organizations").select("id").limit(1);
++  if (error) {
++    // table absente (42P01 / PGRST205) : fonctionnalité désactivée, tout le reste marche
++    organizationsEnabled = false;
++    console.info("[ValTrack] Organisations désactivées (script SQL de l'étape C non exécuté) :", error.message);
++    return [];
++  }
++  organizationsEnabled = true;
++  const rows = await fetchAll("organizations");
++  return rows.map((r) => ({ id: r.id, name: r.name || "", rosterOverride: r.roster_override || null }));
++}
++
++export async function upsertOrganizationDb(org) {
++  ensureConfigured();
++  if (!organizationsEnabled) throw new Error("Les organisations ne sont pas encore activées : exécute supabase/etape-c-organisations.sql.");
++  const { error } = await supabase.from("organizations").upsert(organizationToRow(org), { onConflict: "id" });
++  throwIfError(error);
++}
++
+ const matchToRow = (tournamentId, match) => ({
+   id: match.id,
+   tournament_id: tournamentId,
+@@ -239,6 +273,7 @@ export async function loadValtrackData() {
+   const matchRows = await fetchAll("matches");
+   const statRows = await fetchAll("match_player_stats");
+   const hiddenRows = await fetchAll("hidden_teams");
++  const organizations = await loadOrganizations();
+ 
+   // Les logos ne sont plus chargés ici : ils sont récupérés en arrière-plan
+   // après l'affichage de l'application pour ne pas bloquer le démarrage.
+@@ -266,6 +301,7 @@ export async function loadValtrackData() {
+       name: row.name || "",
+       playerIds: row.player_ids || [],
+       eliminated: Boolean(row.eliminated),
++      organizationId: row.organization_id || null,
+     });
+   }
+ 
+@@ -303,7 +339,7 @@ export async function loadValtrackData() {
+ 
+   const hiddenTeams = hiddenRows.map((r) => r.team_key);
+ 
+-  return { players, tournaments, teamLogos: {}, hiddenTeams };
++  return { players, tournaments, teamLogos: {}, hiddenTeams, organizations, organizationsEnabled };
+ }
+ 
+ export async function loadTeamLogosDb(onLogo) {
+diff --git a/supabase/etape-c-organisations.sql b/supabase/etape-c-organisations.sql
+new file mode 100644
+index 0000000..9bc9272
+--- /dev/null
++++ b/supabase/etape-c-organisations.sql
+@@ -0,0 +1,50 @@
++-- ValTrack — étape C : organisations
++-- ------------------------------------------------------------------
++-- À exécuter une fois dans Supabase → SQL Editor. Ce script AJOUTE une table et une colonne ;
++-- il ne supprime ni ne modifie aucune donnée existante (à part remplir la nouvelle colonne).
++--
++-- Avant : l'appli regroupait les équipes par nom ("DRX" d'un tournoi = "DRX" d'un autre).
++-- Après : chaque équipe de tournoi est rattachée à une organisation. Renommer une organisation
++-- garde son historique, et deux noms différents peuvent désigner la même organisation.
++-- L'appli fonctionne aussi sans ce script (regroupement par nom), mais sans la correction
++-- manuelle du roster.
++
++create table if not exists public.organizations (
++  id text primary key,
++  name text not null default '',
++  -- roster actif corrigé à la main (ids des joueurs) ; null = déduit des tournois
++  roster_override jsonb,
++  created_at timestamptz not null default now(),
++  updated_at timestamptz not null default now()
++);
++
++alter table public.tournament_teams
++  add column if not exists organization_id text references public.organizations (id) on delete set null;
++
++-- Une organisation par nom d'équipe existant (même règle qu'avant : casse et espaces ignorés).
++-- L'identifiant est stable : 'org_' + empreinte du nom.
++insert into public.organizations (id, name)
++select distinct on (lower(trim(name)))
++  'org_' || substr(md5(lower(trim(name))), 1, 16), trim(name)
++from public.tournament_teams
++where trim(name) <> ''
++order by lower(trim(name))
++on conflict (id) do nothing;
++
++update public.tournament_teams
++set organization_id = 'org_' || substr(md5(lower(trim(name))), 1, 16)
++where organization_id is null and trim(name) <> '';
++
++-- Mêmes règles d'accès que les autres tables si tu as exécuté securite-rls.sql :
++-- lecture pour tous, écriture pour les comptes connectés.
++alter table public.organizations enable row level security;
++drop policy if exists valtrack_lecture on public.organizations;
++drop policy if exists valtrack_ajout on public.organizations;
++drop policy if exists valtrack_modif on public.organizations;
++drop policy if exists valtrack_suppr on public.organizations;
++create policy valtrack_lecture on public.organizations for select to anon, authenticated using (true);
++-- Si tu n'as PAS encore verrouillé les autres tables (securite-rls.sql), remplace
++-- "to authenticated" par "to anon, authenticated" sur les trois lignes suivantes.
++create policy valtrack_ajout on public.organizations for insert to authenticated with check (true);
++create policy valtrack_modif on public.organizations for update to authenticated using (true) with check (true);
++create policy valtrack_suppr on public.organizations for delete to authenticated using (true);
