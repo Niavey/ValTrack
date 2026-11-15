@@ -1,12 +1,34 @@
 import { num } from "./stats.js";
+import { computeParticipation, playedMaps } from "./participation.js";
 
-// team Elo ranking — global registry keyed by team name, recomputed live from every match
-export const ELO_START = 1000;
-export const ELO_MIN = 0;
-export const ELO_MAX = 2000;
-export const ELO_K = 48;
-export const ELO_SCALE = 400;
-export const TOURNAMENT_ELO_BONUS = { Split: 30, Masters: 60, Champions: 100, Autre: 20 };
+// Elo individuel des joueurs
+// ------------------------------------------------------------------
+// Chaque joueur a son propre Elo, qu'il garde en changeant d'équipe. L'Elo d'une équipe est la
+// moyenne de ses 5 joueurs principaux. Tout est recalculé à chaque affichage en rejouant les
+// matchs dans l'ordre chronologique (tournois par date, matchs dans l'ordre de saisie) : changer
+// un réglage ci-dessous s'applique donc immédiatement à tout l'historique, sans migration.
+export const ELO_CONFIG = {
+  start: 1000,          // Elo d'un nouveau joueur
+  min: 0,
+  max: 2000,
+  k: 48,                // amplitude d'un match "normal"
+  scale: 400,           // écart d'Elo pour lequel le favori a ~91 % de chances
+  stompWeight: 0.65,    // 13-0 partout → gain/perte x1,65
+  // coefficient selon la part des maps jouées : 1/3 → 0,60 · 2/3 → 0,80 · 3/3 → 1,00
+  participationFloor: 0.4,
+  // bonus/malus selon le Rating comparé à la moyenne de son équipe sur le match
+  ratingSensitivity: 0.5, // Rating 20 % au-dessus de la moyenne → +10 %
+  ratingCap: 0.10,        // effet plafonné à ±10 %
+  tournamentBonus: { Split: 30, Masters: 60, Champions: 100, Autre: 20 },
+  mainPlayers: 5,         // nombre de joueurs comptés dans l'Elo d'une équipe
+};
+
+export const ELO_START = ELO_CONFIG.start;
+export const ELO_MIN = ELO_CONFIG.min;
+export const ELO_MAX = ELO_CONFIG.max;
+export const ELO_K = ELO_CONFIG.k;
+export const ELO_SCALE = ELO_CONFIG.scale;
+export const TOURNAMENT_ELO_BONUS = ELO_CONFIG.tournamentBonus;
 
 export function clampElo(v) {
   return Math.max(ELO_MIN, Math.min(ELO_MAX, v));
@@ -43,20 +65,51 @@ export function getStompMultiplier(mapScores) {
 
   const roundDiff = Math.abs(roundsA - roundsB);
   const dominance = roundDiff / totalRounds;
-  return 1 + dominance * 0.65;
+  return 1 + dominance * ELO_CONFIG.stompWeight;
 }
 
-export function computeTeamElo(tournaments) {
-  const registry = {}; // lowercased name -> { name, elo, history: [...] }
-  const getEntry = (name) => {
-    const key = name.trim().toLowerCase();
-    if (!registry[key]) registry[key] = { name, elo: ELO_START, history: [] };
-    registry[key].name = name; // keep the most recently seen casing
-    return registry[key];
+export function participationCoefficient(mapsPlayed, totalMaps, config = ELO_CONFIG) {
+  if (!totalMaps || !mapsPlayed) return 1; // ancien match sans détail des maps
+  const share = Math.min(1, mapsPlayed / totalMaps);
+  return config.participationFloor + (1 - config.participationFloor) * share;
+}
+
+// +x % pour une bonne perf, −x % pour une mauvaise, par rapport au Rating moyen de son équipe
+export function ratingAdjustment(playerRating, teamAverageRating, config = ELO_CONFIG) {
+  if (playerRating === null || !teamAverageRating) return 0;
+  const raw = (playerRating / teamAverageRating - 1) * config.ratingSensitivity;
+  return Math.max(-config.ratingCap, Math.min(config.ratingCap, raw));
+}
+
+function hasRating(v) {
+  return v !== "" && v !== undefined && v !== null && !Number.isNaN(Number(String(v).replace(",", ".")));
+}
+
+export function chronologicalTournaments(tournaments) {
+  return [...(tournaments || [])].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+}
+
+const teamKey = (name) => String(name || "").trim().toLowerCase();
+
+// Rejoue tous les matchs et renvoie :
+//   players : Map playerId → { elo, history[] }
+//   teams   : Map nom d'équipe (minuscules) → { name, history[] }  (historique au niveau équipe)
+export function computeEloState(tournaments, config = ELO_CONFIG) {
+  const clamp = (v) => Math.max(config.min, Math.min(config.max, v));
+  const players = new Map();
+  const teams = new Map();
+  const playerEntry = (id) => {
+    if (!players.has(id)) players.set(id, { elo: config.start, history: [] });
+    return players.get(id);
+  };
+  const teamEntry = (name) => {
+    const key = teamKey(name);
+    if (!teams.has(key)) teams.set(key, { name, history: [] });
+    teams.get(key).name = name; // garde la dernière écriture du nom
+    return teams.get(key);
   };
 
-  const ordered = [...tournaments].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-  ordered.forEach((t) => {
+  chronologicalTournaments(tournaments).forEach((t) => {
     (t.matches || []).forEach((m) => {
       const teamA = t.teams.find((x) => x.id === m.teamAId);
       const teamB = t.teams.find((x) => x.id === m.teamBId);
@@ -64,33 +117,133 @@ export function computeTeamElo(tournaments) {
       const winnerId = matchWinnerTeamId(m);
       if (!winnerId) return;
 
-      const eA = getEntry(teamA.name);
-      const eB = getEntry(teamB.name);
-      const beforeA = eA.elo, beforeB = eB.elo;
-      const expectedA = 1 / (1 + Math.pow(10, (beforeB - beforeA) / ELO_SCALE));
-      const actualA = winnerId === teamA.id ? 1 : 0;
-      const stompMultiplier = getStompMultiplier(m.mapScores);
-      const matchK = ELO_K * stompMultiplier;
-      eA.elo = clampElo(beforeA + matchK * (actualA - expectedA));
-      eB.elo = clampElo(beforeB + matchK * ((1 - actualA) - (1 - expectedA)));
+      const totalMaps = playedMaps(m.mapScores).length;
+      const participation = computeParticipation(m, teamA, teamB);
+      const sides = { A: teamA, B: teamB };
+      const lineup = {};
+      for (const side of ["A", "B"]) {
+        let ids = [...participation.entries()].filter(([, p]) => p.side === side).map(([id, p]) => ({ id, maps: p.maps }));
+        // match sans stats ni compo : on prend l'effectif de l'équipe
+        if (ids.length === 0) ids = sides[side].playerIds.map((id) => ({ id, maps: 0 }));
+        lineup[side] = ids;
+      }
+      if (lineup.A.length === 0 || lineup.B.length === 0) return;
 
-      eA.history.push({ type: "match", tournamentName: t.name, matchLabel: m.label, opponentName: teamB.name, result: actualA ? "W" : "L", delta: eA.elo - beforeA, eloAfter: eA.elo });
-      eB.history.push({ type: "match", tournamentName: t.name, matchLabel: m.label, opponentName: teamA.name, result: actualA ? "L" : "W", delta: eB.elo - beforeB, eloAfter: eB.elo });
+      // force de chaque équipe = moyenne des Elo, pondérée par les maps jouées
+      const strength = (ids) => {
+        let sum = 0, weight = 0;
+        ids.forEach(({ id, maps }) => { const w = maps || 1; sum += playerEntry(id).elo * w; weight += w; });
+        return sum / weight;
+      };
+      const strengthA = strength(lineup.A);
+      const strengthB = strength(lineup.B);
+      const expectedA = 1 / (1 + Math.pow(10, (strengthB - strengthA) / config.scale));
+      const actualA = winnerId === teamA.id ? 1 : 0;
+      const baseA = config.k * getStompMultiplier(m.mapScores) * (actualA - expectedA);
+
+      for (const side of ["A", "B"]) {
+        const won = (side === "A") === (actualA === 1);
+        const base = side === "A" ? baseA : -baseA;
+        const opponent = side === "A" ? teamB : teamA;
+        const ratings = lineup[side]
+          .map(({ id }) => m.stats?.[id]?.rating)
+          .filter(hasRating)
+          .map(num);
+        const avgRating = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0;
+
+        let teamDeltaSum = 0, teamWeight = 0;
+        lineup[side].forEach(({ id, maps }) => {
+          const entry = playerEntry(id);
+          const coef = participationCoefficient(maps, totalMaps, config);
+          const rating = hasRating(m.stats?.[id]?.rating) ? num(m.stats[id].rating) : null;
+          const perf = ratingAdjustment(rating, avgRating, config);
+          // une bonne perf fait gagner un peu plus… et perdre un peu moins
+          const delta = base * coef * (won ? 1 + perf : 1 - perf);
+          const before = entry.elo;
+          entry.elo = clamp(before + delta);
+          entry.history.push({
+            type: "match", tournamentId: t.id, tournamentName: t.name, matchId: m.id, matchLabel: m.label,
+            teamName: sides[side].name, opponentName: opponent.name, result: won ? "W" : "L",
+            delta: entry.elo - before, eloAfter: entry.elo, participation: coef, performance: perf,
+          });
+          const w = maps || 1;
+          teamDeltaSum += (entry.elo - before) * w;
+          teamWeight += w;
+        });
+
+        teamEntry(sides[side].name).history.push({
+          type: "match", tournamentName: t.name, matchLabel: m.label, opponentName: opponent.name,
+          result: won ? "W" : "L", delta: teamWeight ? teamDeltaSum / teamWeight : 0,
+          strengthBefore: side === "A" ? strengthA : strengthB,
+        });
+      }
     });
 
+    // bonus de victoire en tournoi pour chaque joueur du roster vainqueur
     if (t.finished && t.winnerTeamId) {
       const winnerTeam = t.teams.find((x) => x.id === t.winnerTeamId);
       if (winnerTeam) {
-        const e = getEntry(winnerTeam.name);
-        const before = e.elo;
-        const bonus = TOURNAMENT_ELO_BONUS[t.type] ?? 0;
-        e.elo = clampElo(before + bonus);
-        e.history.push({ type: "trophy", tournamentName: t.name, tournamentType: t.type, delta: e.elo - before, eloAfter: e.elo });
+        const bonus = config.tournamentBonus[t.type] ?? 0;
+        winnerTeam.playerIds.forEach((id) => {
+          const entry = playerEntry(id);
+          const before = entry.elo;
+          entry.elo = clamp(before + bonus);
+          entry.history.push({ type: "trophy", tournamentId: t.id, tournamentName: t.name, tournamentType: t.type, teamName: winnerTeam.name, delta: entry.elo - before, eloAfter: entry.elo });
+        });
+        teamEntry(winnerTeam.name).history.push({ type: "trophy", tournamentName: t.name, tournamentType: t.type, delta: bonus });
       }
     }
   });
 
-  return Object.values(registry).sort((a, b) => b.elo - a.elo);
+  return { players, teams };
+}
+
+// Les 5 joueurs principaux d'une équipe : son dernier tournoi, classés par maps jouées dans ce
+// tournoi (un remplaçant passe donc après les titulaires).
+export function currentMainRoster(name, tournaments, config = ELO_CONFIG) {
+  const key = teamKey(name);
+  const ordered = chronologicalTournaments(tournaments);
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    const t = ordered[i];
+    const team = t.teams.find((x) => teamKey(x.name) === key);
+    if (!team) continue;
+    const mapsPlayed = new Map(team.playerIds.map((id) => [id, 0]));
+    (t.matches || []).forEach((m) => {
+      if (m.teamAId !== team.id && m.teamBId !== team.id) return;
+      const teamA = t.teams.find((x) => x.id === m.teamAId);
+      const teamB = t.teams.find((x) => x.id === m.teamBId);
+      const side = m.teamAId === team.id ? "A" : "B";
+      computeParticipation(m, teamA, teamB).forEach((p, id) => {
+        if (p.side === side && mapsPlayed.has(id)) mapsPlayed.set(id, mapsPlayed.get(id) + Math.max(1, p.maps));
+      });
+    });
+    const sorted = [...team.playerIds].sort((a, b) => mapsPlayed.get(b) - mapsPlayed.get(a));
+    return { tournament: t, team, main: sorted.slice(0, config.mainPlayers), others: sorted.slice(config.mainPlayers) };
+  }
+  return null;
+}
+
+// Classement des équipes : Elo actuel = moyenne des Elo des 5 joueurs principaux.
+export function computeTeamElo(tournaments, config = ELO_CONFIG) {
+  const { players, teams } = computeEloState(tournaments, config);
+  const names = new Map();
+  chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => names.set(teamKey(team.name), team.name)));
+
+  const ranking = [];
+  names.forEach((name, key) => {
+    const roster = currentMainRoster(name, tournaments, config);
+    const main = roster?.main || [];
+    const playerElos = main.map((id) => ({ id, elo: players.get(id)?.elo ?? config.start }));
+    // une équipe qui n'a encore rien joué est quand même classée avec l'Elo de ses joueurs
+    const history = teams.get(key)?.history || [];
+    const elo = playerElos.length ? playerElos.reduce((s, p) => s + p.elo, 0) / playerElos.length : config.start;
+    ranking.push({ name, elo, history, roster: playerElos, substitutes: roster?.others || [] });
+  });
+  return ranking.sort((a, b) => b.elo - a.elo);
+}
+
+export function computePlayerElo(tournaments, config = ELO_CONFIG) {
+  return computeEloState(tournaments, config).players;
 }
 
 // everything shown on a team's profile page: bilan, extremes, palmarès, roster, recent history

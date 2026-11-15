@@ -12,7 +12,7 @@ import {
   setTeamLogoDb, setHiddenTeamDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
 } from "./valtrackDb";
 import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
-import { ELO_MAX, computeTeamElo, getTeamProfile } from "./domain/elo.js";
+import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo, getTeamProfile } from "./domain/elo.js";
 import { computeParticipation, resolveLineups, compactLineups, isPlayedMap, substitutionSummary } from "./domain/participation.js";
 import { DEFAULT_DATA_FILTERS, tournamentYear, normalizedTeamName, filterTournamentScope, eligiblePlayerIdsForFilters, trimTournamentStatsForFilters, buildFilteredLeaderboardPlayers } from "./domain/filters.js";
 import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
@@ -838,8 +838,43 @@ function Leaderboard({ players, onOpenPlayer, query, sortKey, sortDir, onSort, t
   );
 }
 
+// ---------- Elo individuel : derniers changements ----------
+function EloHistory({ history }) {
+  if (!history.length) return null;
+  const recent = [...history].reverse().slice(0, 10);
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div className="vt-label" style={{ marginBottom: 8 }}>Historique Elo</div>
+      <div className="vt-panel vt-cut" style={{ padding: 4 }}>
+        {recent.map((h, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 16px", borderBottom: i < recent.length - 1 ? "1px solid var(--line)" : "none" }}>
+            <div style={{ fontSize: 13 }}>
+              {h.type === "trophy" ? (
+                <span style={{ color: TROPHY_COLOR[h.tournamentType] || TROPHY_COLOR.Autre }}>
+                  <Trophy size={12} style={{ display: "inline", marginRight: 5 }} />{h.tournamentType} — {h.tournamentName} ({h.teamName})
+                </span>
+              ) : (
+                <>
+                  <span style={{ color: h.result === "W" ? "var(--green)" : "var(--red)", fontWeight: 700, marginRight: 6 }}>{h.result}</span>
+                  {h.teamName} vs {h.opponentName}
+                  <span style={{ color: "var(--text-dim)" }}> — {h.tournamentName} · {h.matchLabel}</span>
+                  {h.participation < 1 && <span style={{ color: "var(--text-dim)", fontSize: 11 }}> · participation ×{h.participation.toFixed(2)}</span>}
+                </>
+              )}
+            </div>
+            <div className="vt-mono" style={{ display: "flex", gap: 12, flexShrink: 0, fontSize: 12 }}>
+              <span style={{ fontWeight: 700, color: h.delta >= 0 ? "var(--green)" : "var(--red)" }}>{h.delta >= 0 ? "+" : ""}{Math.round(h.delta)}</span>
+              <span style={{ color: "var(--text-dim)", width: 40, textAlign: "right" }}>{Math.round(h.eloAfter)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ---------- player detail ----------
-function PlayerDetail({ player, players, tournaments, teamLogos, onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
+function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = [], onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
   const [tab, setTab] = useState("profile");
   const [compareOpen, setCompareOpen] = useState(false);
   const history = [...(player.teamHistory || [])].reverse();
@@ -910,6 +945,8 @@ function PlayerDetail({ player, players, tournaments, teamLogos, onAddMatch, onE
           </div>
 
           <TrophySection player={player} onUpdate={onUpdate} />
+
+          <EloHistory history={eloHistory} />
 
           <div className="vt-label" style={{ marginBottom: 8 }}>Autres stats</div>
           <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
@@ -1982,8 +2019,9 @@ function RecordsView({ tournaments, players, filters, onFiltersChange }) {
   );
 }
 
-function TeamsLeaderboard({ tournaments, teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
+function TeamsLeaderboard({ tournaments, players = [], teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
   const ranking = useMemo(() => computeTeamElo(tournaments), [tournaments]);
+  const playerNames = useMemo(() => new Map(players.map((p) => [p.id, p.name])), [players]);
   const hiddenSet = new Set(hiddenTeams);
   const visible = ranking.filter((t) => !hiddenSet.has(t.name.trim().toLowerCase()));
   const hidden = ranking.filter((t) => hiddenSet.has(t.name.trim().toLowerCase()));
@@ -2001,10 +2039,11 @@ function TeamsLeaderboard({ tournaments, teamLogos, hiddenTeams, onToggleHidden,
   return (
     <div>
       <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 16 }}>
-        Score Elo (0-2000, départ à 1000) recalculé sur tous les matchs enregistrés, appliqués au
-        classement général ou non, dans l'ordre chronologique des tournois. Une victoire contre un
-        favori rapporte gros, une victoire attendue rapporte peu ; gagner un tournoi ajoute un bonus
-        selon son prestige (Champions {'>'} Masters {'>'} Split).
+        L'Elo appartient aux joueurs : celui d'une équipe est la moyenne de ses 5 joueurs principaux
+        (ceux qui ont le plus joué lors de son dernier tournoi). Il suit donc le roster : un joueur
+        qui change d'équipe emporte son Elo avec lui. Recalculé sur tous les matchs enregistrés,
+        dans l'ordre chronologique ; battre un favori rapporte gros, un remplaçant gagne selon ses
+        maps jouées, et gagner un tournoi donne un bonus à chaque joueur du roster vainqueur.
       </div>
       <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: hidden.length > 0 ? 16 : 0 }}>
         {visible.map((team, i) => {
@@ -2023,6 +2062,11 @@ function TeamsLeaderboard({ tournaments, teamLogos, hiddenTeams, onToggleHidden,
               {logo && <img src={logo} className="vt-logo" alt="" />}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="vt-display" style={{ fontWeight: 600, fontSize: 15 }}>{team.name}</div>
+                {team.roster.length > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {team.roster.map((r) => playerNames.get(r.id) || "?").join(" · ")}
+                  </div>
+                )}
                 <div style={{ height: 4, background: "var(--panel-raised)", marginTop: 5, overflow: "hidden" }}>
                   <div style={{ height: "100%", width: `${pct}%`, background: "var(--red)" }} />
                 </div>
@@ -2181,6 +2225,26 @@ function TeamProfile({ nameKey, tournaments, players, teamLogos, hiddenTeams, on
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      <div className="vt-label" style={{ marginBottom: 8 }}>Roster actuel</div>
+      {entry.roster.length === 0 ? (
+        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Aucun joueur.</div>
+      ) : (
+        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
+          {[...entry.roster.map((r) => ({ ...r, sub: false })), ...entry.substitutes.map((id) => ({ id, elo: null, sub: true }))].map((r, i, arr) => {
+            const p = players.find((x) => x.id === r.id);
+            if (!p) return null;
+            return (
+              <div key={r.id} className="vt-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", cursor: "pointer", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }} onClick={() => onOpenPlayer(r.id)}>
+                <span className="vt-display" style={{ fontWeight: 600 }}>
+                  {p.name}{r.sub && <span className="vt-label" style={{ marginLeft: 8 }}>Remplaçant</span>}
+                </span>
+                {!r.sub && <span className="vt-mono" style={{ fontWeight: 700 }}>{Math.round(r.elo)}</span>}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -2386,8 +2450,12 @@ export default function App() {
 
   // silent update (no modal to close) — used for trophies, added inline on the profile page
   const updatePlayer = (p) => {
-    setPlayers((prev) => prev.map((x) => (x.id === p.id ? p : x)));
-    persist(() => upsertPlayerDb(p), `la sauvegarde de ${p.name}`);
+    // la fiche affichée contient des valeurs calculées (MVP, MJ, Elo) : on garde les stats
+    // réellement enregistrées pour ne jamais les figer en base
+    const raw = players.find((x) => x.id === p.id);
+    const next = raw ? { ...p, stats: raw.stats } : p;
+    setPlayers((prev) => prev.map((x) => (x.id === p.id ? next : x)));
+    persist(() => upsertPlayerDb(next), `la sauvegarde de ${p.name}`);
   };
 
   // Must stay synchronous because TeamModal immediately needs the returned player's id.
@@ -2599,10 +2667,17 @@ export default function App() {
   // MVP/MJ are fully derived from every recorded match (applied or not) — never stored,
   // so there's nothing to keep in sync
   const mvpMjCounts = useMemo(() => computeMvpMjCounts(tournaments), [tournaments]);
+  // Elo individuel : recalculé à partir de tous les matchs, jamais stocké non plus
+  const playerElo = useMemo(() => computePlayerElo(tournaments), [tournaments]);
   const displayPlayers = useMemo(() => players.map((p) => ({
     ...p,
-    stats: { ...p.stats, mvp: mvpMjCounts[p.id]?.mvp || 0, mj: mvpMjCounts[p.id]?.mj || 0 },
-  })), [players, mvpMjCounts]);
+    stats: {
+      ...p.stats,
+      mvp: mvpMjCounts[p.id]?.mvp || 0,
+      mj: mvpMjCounts[p.id]?.mj || 0,
+      elo: playerElo.get(p.id)?.elo ?? ELO_START,
+    },
+  })), [players, mvpMjCounts, playerElo]);
 
   const filteredLeaderboardPlayers = useMemo(
     () => buildFilteredLeaderboardPlayers(displayPlayers, tournaments, dataFilters),
@@ -2683,7 +2758,7 @@ export default function App() {
         </div>
 
         {view.name === "records" && <RecordsView tournaments={tournaments} players={players} filters={dataFilters} onFiltersChange={setDataFilters} />}
-        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
+        {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} players={players} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
         {view.name === "team" && (
           <TeamProfile
             nameKey={view.key}
@@ -2729,6 +2804,7 @@ export default function App() {
           <PlayerDetail
             player={activePlayer}
             players={displayPlayers}
+            eloHistory={playerElo.get(activePlayer.id)?.history || []}
             tournaments={tournaments}
             teamLogos={teamLogos}
             onBack={backToLeaderboard}

@@ -151,6 +151,8 @@ export function buildFilteredLeaderboardPlayers(players, tournaments, filters) {
         ...totals.get(p.id),
         mvp: scopedMvpMj[p.id]?.mvp || 0,
         mj: scopedMvpMj[p.id]?.mj || 0,
+        // l'Elo est toujours l'Elo actuel du joueur, quels que soient les filtres
+        elo: p.stats.elo,
       },
     }))
     .filter((p) => num(p.stats.round) >= minimum);
