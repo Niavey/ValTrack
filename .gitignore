@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Secrets locaux
+.env
+.env.*
+!.env.example
+
+# Fichiers Windows
+desktop.ini
+Thumbs.db
