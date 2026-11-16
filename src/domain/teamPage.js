@@ -2,6 +2,7 @@ import { emptyStats, applyMatchToStats } from "./stats.js";
 import { computeParticipation } from "./participation.js";
 import { computeMvpMj } from "./records.js";
 import { ELO_CONFIG, computeTeamElo, chronologicalTournaments, orgKeyOf } from "./elo.js";
+import { classifyClubMembers } from "./legends.js";
 
 const pickExtreme = (list, better) => (list.length ? list.reduce((a, b) => (better(a, b) ? b : a)) : null);
 const hasAnyValue = (row) => Object.values(row || {}).some((v) => v !== "" && v !== undefined && v !== null);
@@ -80,10 +81,15 @@ export function buildTeamPage(key, tournaments, players, { organizations = [], p
 
   const activeIds = [...entry.roster.map((r) => r.id), ...entry.substitutes];
   const activeSet = new Set(activeIds);
-  const active = activeIds.map((id) => ({ ...toRow(id), substitute: !entry.roster.some((r) => r.id === id) }));
+  // statut de légende calculé sur tous les joueurs passés par l'équipe (actifs compris)
+  const members = classifyClubMembers([...new Set([...stints.keys(), ...activeIds])].map(toRow))
+    .map((m) => ({ ...m, active: activeSet.has(m.id) }));
+  const legendById = new Map(members.map((m) => [m.id, m.legend]));
+  const withLegend = (row) => ({ ...row, legend: legendById.get(row.id) });
+  const active = activeIds.map((id) => withLegend({ ...toRow(id), substitute: !entry.roster.some((r) => r.id === id) }));
   const former = [...stints.keys()]
     .filter((id) => !activeSet.has(id))
-    .map(toRow)
+    .map((id) => withLegend(toRow(id)))
     .sort((a, b) => b.stats.match - a.stats.match || String(b.until).localeCompare(String(a.until)));
 
   const matches = entry.history.filter((h) => h.type === "match");
@@ -98,7 +104,23 @@ export function buildTeamPage(key, tournaments, players, { organizations = [], p
     active,
     former,
     palmares: palmares.reverse(),
-    // utilisé plus tard pour les Légendes du club
-    allMembers: [...stints.keys()].map(toRow),
+    members,
+    legends: members.filter((m) => m.legend.level === "legend"),
+    historic: members.filter((m) => m.legend.level === "historic"),
   };
+}
+
+// Statuts de club d'un joueur (Légende / Figure historique) dans toutes les équipes où il est passé
+export function clubStatusesForPlayer(playerId, tournaments, players, options = {}) {
+  const keys = new Map();
+  chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => {
+    if (team.playerIds.includes(playerId)) keys.set(orgKeyOf(team), team.name);
+  }));
+  const out = [];
+  keys.forEach((_name, key) => {
+    const page = buildTeamPage(key, tournaments, players, options);
+    const me = page?.members.find((m) => m.id === playerId);
+    if (me && me.legend.level !== "member") out.push({ teamKey: key, teamName: page.entry.name, level: me.legend.level, reasons: me.legend.reasons, active: me.active });
+  });
+  return out.sort((a, b) => (a.level === "legend" ? 0 : 1) - (b.level === "legend" ? 0 : 1));
 }

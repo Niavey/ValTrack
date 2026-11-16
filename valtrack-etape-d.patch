@@ -1,0 +1,388 @@
+diff --git a/src/App.jsx b/src/App.jsx
+index 17de22f..6f6dc15 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -13,7 +13,8 @@ import {
+ } from "./valtrackDb";
+ import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
+ import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo } from "./domain/elo.js";
+-import { buildTeamPage } from "./domain/teamPage.js";
++import { buildTeamPage, clubStatusesForPlayer } from "./domain/teamPage.js";
++import { LEGEND_LEVELS } from "./domain/legends.js";
+ import { computeParticipation, resolveLineups, compactLineups, isPlayedMap, substitutionSummary } from "./domain/participation.js";
+ import { DEFAULT_DATA_FILTERS, tournamentYear, normalizedTeamName, filterTournamentScope, eligiblePlayerIdsForFilters, trimTournamentStatsForFilters, buildFilteredLeaderboardPlayers } from "./domain/filters.js";
+ import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
+@@ -875,7 +876,7 @@ function EloHistory({ history }) {
+ }
+ 
+ // ---------- player detail ----------
+-function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = [], onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
++function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = [], clubStatuses = [], onOpenTeam, onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
+   const [tab, setTab] = useState("profile");
+   const [compareOpen, setCompareOpen] = useState(false);
+   const history = [...(player.teamHistory || [])].reverse();
+@@ -897,6 +898,19 @@ function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = []
+                 {currentTeam(player) && <span style={{ color: "var(--steel)", fontSize: 14 }}>{currentTeam(player)}</span>}
+                 {player.nationality && <span style={{ fontSize: 13, color: "var(--text-dim)", display: "inline-flex", alignItems: "center", gap: 6 }}><CountryFlag code={player.nationality} /> {countryLabel(player.nationality)}</span>}
+               </div>
++              {clubStatuses.length > 0 && (
++                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
++                  {clubStatuses.map((c) => {
++                    const info = LEGEND_LEVELS[c.level];
++                    return (
++                      <button key={c.teamKey} type="button" title={c.reasons.join(" · ")} onClick={() => onOpenTeam?.(c.teamKey)} className="vt-cut-sm"
++                        style={{ background: "var(--panel-raised)", border: `1px solid ${info.color}`, color: info.color, padding: "3px 8px", fontSize: 11, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "'Rajdhani', sans-serif", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
++                        {c.level === "legend" && <Crown size={11} />}{info.label} — {c.teamName}
++                      </button>
++                    );
++                  })}
++                </div>
++              )}
+             </div>
+           </div>
+           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+@@ -2152,6 +2166,16 @@ function formatPeriod(since, until, active) {
+   return since || until || "—";
+ }
+ 
++function LegendBadge({ level, title }) {
++  if (!level || level === "member") return null;
++  const info = LEGEND_LEVELS[level];
++  return (
++    <span className="vt-label" title={title} style={{ marginLeft: 8, color: info.color, border: `1px solid ${info.color}`, padding: "1px 6px", whiteSpace: "nowrap" }}>
++      {level === "legend" && <Crown size={10} style={{ display: "inline", marginRight: 3, verticalAlign: "-1px" }} />}{info.label}
++    </span>
++  );
++}
++
+ function MemberTable({ rows, active, onOpenPlayer, detailed }) {
+   const extra = detailed ? [
+     { label: "FK / FD", render: (s) => `${num(s.fk)} / ${num(s.fd)}` },
+@@ -2178,6 +2202,7 @@ function MemberTable({ rows, active, onOpenPlayer, detailed }) {
+               <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
+                 <span className="vt-display" style={{ fontWeight: 600, fontSize: 15 }}>{r.player?.name || "?"}</span>
+                 {r.substitute && <span className="vt-label" style={{ marginLeft: 8 }}>Remplaçant</span>}
++                <LegendBadge level={r.legend?.level} title={r.legend?.reasons.join(" · ")} />
+               </td>
+               <td className="vt-mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>{Math.round(r.elo)}</td>
+               <td style={{ padding: "10px 12px", fontSize: 12, color: "var(--text-dim)", whiteSpace: "nowrap" }}>{formatPeriod(r.since, r.until, active)}</td>
+@@ -2258,7 +2283,7 @@ function TeamProfile({ teamKey, tournaments, players, organizations, organizatio
+     );
+   }
+ 
+-  const { entry, rank, wins, losses, bestGain, worstLoss, recent, active, former, palmares } = data;
++  const { entry, rank, wins, losses, bestGain, worstLoss, recent, active, former, palmares, legends, historic } = data;
+   const playerName = (id) => players.find((p) => p.id === id)?.name || "?";
+   const logo = getLogo(teamLogos, entry.name);
+   const isHidden = hiddenTeams.includes(entry.name.trim().toLowerCase());
+@@ -2336,6 +2361,38 @@ function TeamProfile({ teamKey, tournaments, players, organizations, organizatio
+         </div>
+       )}
+ 
++      <div className="vt-label" style={{ marginBottom: 4 }}>Légendes du club</div>
++      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
++        Trois chemins mènent au statut de Légende : une longévité exceptionnelle à elle seule, un gros
++        palmarès avec une vraie durée dans l'équipe, ou un ensemble solide longévité + palmarès +
++        performance. Les Figures historiques ont marqué l'équipe sans aller jusque-là.
++      </div>
++      {legends.length + historic.length === 0 ? (
++        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Pas encore de légende ni de figure historique.</div>
++      ) : (
++        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, marginBottom: 22 }}>
++          {[...legends, ...historic].map((m) => {
++            const info = LEGEND_LEVELS[m.legend.level];
++            return (
++              <div key={m.id} className="vt-panel vt-cut-sm vt-row" style={{ padding: 14, cursor: "pointer", borderColor: m.legend.level === "legend" ? "var(--gold)" : undefined }} onClick={() => onOpenPlayer(m.id)}>
++                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
++                  <span className="vt-display" style={{ fontWeight: 700, fontSize: 16 }}>{m.player?.name || "?"}</span>
++                  <span className="vt-label" style={{ color: info.color, display: "inline-flex", alignItems: "center", gap: 4 }}>
++                    {m.legend.level === "legend" && <Crown size={11} />}{info.label}
++                  </span>
++                </div>
++                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 8 }}>
++                  {formatPeriod(m.since, m.until, m.active)}{m.active ? " · dans le roster actuel" : ""}
++                </div>
++                {m.legend.reasons.map((reason) => (
++                  <div key={reason} style={{ fontSize: 12, lineHeight: 1.6 }}>{reason}</div>
++                ))}
++              </div>
++            );
++          })}
++        </div>
++      )}
++
+       <div className="vt-label" style={{ marginBottom: 4 }}>Anciens joueurs ({former.length})</div>
+       <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
+         Stats calculées uniquement sur leurs matchs avec {entry.name} (tous les matchs enregistrés).
+@@ -2843,6 +2900,11 @@ export default function App() {
+   // the raw (non-overlaid) player — used for anything that can save, so the live MVP/MJ
+   // snapshot never gets baked into real storage
+   const rawActivePlayer = view.name === "player" ? players.find((p) => p.id === view.id) : null;
++  const activePlayerId = view.name === "player" ? view.id : null;
++  const activeClubStatuses = useMemo(
++    () => (activePlayerId ? clubStatusesForPlayer(activePlayerId, tournaments, players, { organizations, playerElo }) : []),
++    [activePlayerId, tournaments, players, organizations, playerElo],
++  );
+   const activeTournament = view.name === "tournament" ? tournaments.find((t) => t.id === view.id) : null;
+ 
+   return (
+@@ -2964,6 +3026,8 @@ export default function App() {
+             player={activePlayer}
+             players={displayPlayers}
+             eloHistory={playerElo.get(activePlayer.id)?.history || []}
++            clubStatuses={activeClubStatuses}
++            onOpenTeam={openTeam}
+             tournaments={tournaments}
+             teamLogos={teamLogos}
+             onBack={backToLeaderboard}
+diff --git a/src/domain/legends.js b/src/domain/legends.js
+new file mode 100644
+index 0000000..bbbb9e2
+--- /dev/null
++++ b/src/domain/legends.js
+@@ -0,0 +1,127 @@
++import { num } from "./stats.js";
++
++// Légendes du club
++// ------------------------------------------------------------------
++// Trois dimensions, notées chacune de 0 à ~1,5 (1 = niveau "légende" sur cette dimension) :
++//   - longévité   : années dans l'équipe, matchs joués, tournois disputés (on garde la meilleure)
++//   - palmarès    : points de trophées gagnés AVEC l'équipe (Champions > Masters > Split)
++//   - performance : Rating comparé au Rating moyen de l'équipe, seulement avec assez de matchs
++//
++// Plusieurs chemins mènent au statut de Légende, pour ne jamais pénaliser la fidélité :
++//   1. longévité exceptionnelle à elle seule (ex. 4 ans, ou 150 matchs) ;
++//   2. gros palmarès + une vraie durée dans l'équipe ;
++//   3. un ensemble solide sur les trois dimensions.
++// Tous les seuils sont ici pour être ajustés après quelques essais.
++export const LEGEND_CONFIG = {
++  longevity: { years: 4, matches: 150, tournaments: 12 }, // = score 1 sur cette dimension
++  trophyPoints: { Champions: 5, Masters: 3, Split: 1, Autre: 0.5 },
++  palmaresForLegend: 6,          // ex. Champions + Split, ou 2 Masters
++  minMatchesForPerformance: 15,  // en dessous, la performance ne compte pas
++  performance: { neutralRatio: 0.95, fullRatio: 1.15 }, // Rating 15 % au-dessus de l'équipe = 1
++  legend: {
++    longevityAlone: 1,           // chemin 1
++    palmares: 1, palmaresMinLongevity: 0.35, // chemin 2 (≈ 1,4 an ou ~50 matchs)
++    combined: 0.9, combinedMinLongevity: 0.35, // chemin 3
++  },
++  weights: { longevity: 0.45, palmares: 0.35, performance: 0.2 },
++  historic: { longevity: 0.4, palmares: 0.4, performance: 1, combined: 0.45 },
++  cap: 1.5,
++};
++
++export const LEGEND_LEVELS = {
++  legend: { label: "Légende", color: "var(--gold)" },
++  historic: { label: "Figure historique", color: "var(--steel)" },
++  member: { label: "Ancien joueur", color: "var(--text-dim)" },
++};
++
++const DAY = 24 * 60 * 60 * 1000;
++function yearsBetween(since, until) {
++  const a = Date.parse(since);
++  const b = Date.parse(until);
++  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return 0;
++  return (b - a) / (365.25 * DAY);
++}
++
++// Rating moyen de l'équipe sur tous ses joueurs, pondéré par le nombre de matchs avec Rating
++export function teamAverageRating(members) {
++  let sum = 0, weight = 0;
++  members.forEach((m) => {
++    const count = num(m.stats?._ratingCount ?? m.stats?.match);
++    if (count > 0 && m.stats?.rating !== "" && m.stats?.rating !== undefined) {
++      sum += num(m.stats.rating) * count;
++      weight += count;
++    }
++  });
++  return weight ? sum / weight : 0;
++}
++
++export function scoreMember(member, teamRating, config = LEGEND_CONFIG) {
++  const cap = (v) => Math.max(0, Math.min(config.cap, v));
++  const years = yearsBetween(member.since, member.until);
++  const matches = num(member.stats?.match);
++  const tournaments = num(member.tournaments);
++
++  const longevity = cap(Math.max(
++    years / config.longevity.years,
++    matches / config.longevity.matches,
++    tournaments / config.longevity.tournaments,
++  ));
++
++  const trophyPoints = (member.trophies || []).reduce((sum, t) => sum + (config.trophyPoints[t.type] ?? 0), 0);
++  const palmares = cap(trophyPoints / config.palmaresForLegend);
++
++  const rating = member.stats?.rating === "" || member.stats?.rating === undefined ? null : num(member.stats.rating);
++  const ratio = rating !== null && teamRating > 0 ? rating / teamRating : null;
++  const { neutralRatio, fullRatio } = config.performance;
++  const performance = ratio !== null && matches >= config.minMatchesForPerformance
++    ? cap((ratio - neutralRatio) / (fullRatio - neutralRatio))
++    : 0;
++
++  const w = config.weights;
++  const combined = w.longevity * longevity + w.palmares * palmares + w.performance * performance;
++  return { years, matches, tournaments, trophyPoints, rating, ratio, longevity, palmares, performance, combined };
++}
++
++// Statut + raisons lisibles, pour afficher POURQUOI un joueur est une légende
++export function classifyMember(member, teamRating, config = LEGEND_CONFIG) {
++  const s = scoreMember(member, teamRating, config);
++  const L = config.legend;
++  const paths = [];
++  if (s.longevity >= L.longevityAlone) paths.push("longevity");
++  if (s.palmares >= L.palmares && s.longevity >= L.palmaresMinLongevity) paths.push("palmares");
++  if (s.combined >= L.combined && s.longevity >= L.combinedMinLongevity) paths.push("combined");
++
++  const H = config.historic;
++  let level = "member";
++  if (paths.length) level = "legend";
++  else if (s.longevity >= H.longevity || s.palmares >= H.palmares || s.performance >= H.performance || s.combined >= H.combined) level = "historic";
++
++  const reasons = [];
++  if (s.years >= 1 || s.matches >= 30) {
++    const parts = [];
++    if (s.years >= 1) parts.push(`${s.years.toFixed(1).replace(".", ",")} an${s.years >= 2 ? "s" : ""}`);
++    parts.push(`${s.matches} match${s.matches > 1 ? "s" : ""}`);
++    reasons.push(`Longévité : ${parts.join(", ")}`);
++  }
++  if (s.trophyPoints > 0) {
++    const counts = {};
++    (member.trophies || []).forEach((t) => { counts[t.type] = (counts[t.type] || 0) + 1; });
++    reasons.push("Palmarès : " + ["Champions", "Masters", "Split", "Autre"]
++      .filter((t) => counts[t]).map((t) => (counts[t] > 1 ? `${counts[t]}× ${t}` : t)).join(", "));
++  }
++  if (s.performance > 0.5 && s.ratio !== null) {
++    const pct = Math.round((s.ratio - 1) * 100);
++    reasons.push(`Performance : Rating ${s.rating.toFixed(2)} (${pct >= 0 ? "+" : ""}${pct} % vs l'équipe)`);
++  }
++  return { level, paths, scores: s, reasons };
++}
++
++// Classe tous les joueurs passés par une équipe (actifs compris), meilleurs d'abord.
++export function classifyClubMembers(members, config = LEGEND_CONFIG) {
++  const teamRating = teamAverageRating(members);
++  const order = { legend: 0, historic: 1, member: 2 };
++  return members
++    .map((m) => ({ ...m, legend: classifyMember(m, teamRating, config) }))
++    .sort((a, b) => order[a.legend.level] - order[b.legend.level]
++      || b.legend.scores.combined - a.legend.scores.combined);
++}
+diff --git a/src/domain/legends.test.js b/src/domain/legends.test.js
+new file mode 100644
+index 0000000..d857882
+--- /dev/null
++++ b/src/domain/legends.test.js
+@@ -0,0 +1,56 @@
++import { describe, it, expect } from "vitest";
++import { classifyMember, classifyClubMembers } from "./legends.js";
++
++const member = ({ since, until, matches, rating, trophies = [], tournaments = 4 }) => ({
++  id: Math.random().toString(36), since, until, tournaments, trophies,
++  stats: { match: matches, rating, _ratingCount: matches },
++});
++const TEAM_RATING = 1.0;
++
++describe("Légendes du club (exemples du cahier des charges)", () => {
++  it("5 ans, énormément de matchs, Rating 0,98, peu de trophées → Légende (fidélité)", () => {
++    const r = classifyMember(member({ since: "2020-01-01", until: "2025-01-01", matches: 220, rating: 0.98, trophies: [{ type: "Split" }] }), TEAM_RATING);
++    expect(r.level).toBe("legend");
++    expect(r.paths).toContain("longevity");
++    expect(r.reasons[0]).toMatch(/^Longévité : 5,0 ans, 220 matchs/);
++  });
++
++  it("6 mois, Rating 1,30, 0 trophée → énorme passage mais pas Légende", () => {
++    const r = classifyMember(member({ since: "2025-01-01", until: "2025-07-01", matches: 30, rating: 1.3, tournaments: 2 }), TEAM_RATING);
++    expect(r.level).toBe("historic");
++    expect(r.reasons.some((x) => x.startsWith("Performance"))).toBe(true);
++  });
++
++  it("3 ans, excellent Rating, Champions + Masters → Légende évidente", () => {
++    const r = classifyMember(member({
++      since: "2022-01-01", until: "2025-01-01", matches: 90, rating: 1.15,
++      trophies: [{ type: "Champions" }, { type: "Masters" }],
++    }), TEAM_RATING);
++    expect(r.level).toBe("legend");
++    expect(r.paths).toEqual(expect.arrayContaining(["palmares", "combined"]));
++  });
++
++  it("un passage court et moyen reste « Ancien joueur »", () => {
++    const r = classifyMember(member({ since: "2025-01-01", until: "2025-03-01", matches: 8, rating: 0.95, tournaments: 1 }), TEAM_RATING);
++    expect(r.level).toBe("member");
++  });
++
++  it("un Masters seul suffit à devenir Figure historique", () => {
++    const r = classifyMember(member({ since: "2025-01-01", until: "2025-06-01", matches: 20, rating: 1.0, trophies: [{ type: "Masters" }], tournaments: 2 }), TEAM_RATING);
++    expect(r.level).toBe("historic");
++  });
++
++  it("la performance ne compte pas sur trop peu de matchs", () => {
++    const r = classifyMember(member({ since: "2025-01-01", until: "2025-01-01", matches: 5, rating: 2.0, tournaments: 1 }), TEAM_RATING);
++    expect(r.scores.performance).toBe(0);
++    expect(r.level).toBe("member");
++  });
++
++  it("classe les légendes en premier", () => {
++    const list = classifyClubMembers([
++      member({ since: "2025-01-01", until: "2025-03-01", matches: 8, rating: 0.95, tournaments: 1 }),
++      member({ since: "2020-01-01", until: "2025-01-01", matches: 220, rating: 0.98 }),
++    ]);
++    expect(list.map((m) => m.legend.level)).toEqual(["legend", "member"]);
++  });
++});
+diff --git a/src/domain/teamPage.js b/src/domain/teamPage.js
+index 78c7f60..973e014 100644
+--- a/src/domain/teamPage.js
++++ b/src/domain/teamPage.js
+@@ -2,6 +2,7 @@ import { emptyStats, applyMatchToStats } from "./stats.js";
+ import { computeParticipation } from "./participation.js";
+ import { computeMvpMj } from "./records.js";
+ import { ELO_CONFIG, computeTeamElo, chronologicalTournaments, orgKeyOf } from "./elo.js";
++import { classifyClubMembers } from "./legends.js";
+ 
+ const pickExtreme = (list, better) => (list.length ? list.reduce((a, b) => (better(a, b) ? b : a)) : null);
+ const hasAnyValue = (row) => Object.values(row || {}).some((v) => v !== "" && v !== undefined && v !== null);
+@@ -80,10 +81,15 @@ export function buildTeamPage(key, tournaments, players, { organizations = [], p
+ 
+   const activeIds = [...entry.roster.map((r) => r.id), ...entry.substitutes];
+   const activeSet = new Set(activeIds);
+-  const active = activeIds.map((id) => ({ ...toRow(id), substitute: !entry.roster.some((r) => r.id === id) }));
++  // statut de légende calculé sur tous les joueurs passés par l'équipe (actifs compris)
++  const members = classifyClubMembers([...new Set([...stints.keys(), ...activeIds])].map(toRow))
++    .map((m) => ({ ...m, active: activeSet.has(m.id) }));
++  const legendById = new Map(members.map((m) => [m.id, m.legend]));
++  const withLegend = (row) => ({ ...row, legend: legendById.get(row.id) });
++  const active = activeIds.map((id) => withLegend({ ...toRow(id), substitute: !entry.roster.some((r) => r.id === id) }));
+   const former = [...stints.keys()]
+     .filter((id) => !activeSet.has(id))
+-    .map(toRow)
++    .map((id) => withLegend(toRow(id)))
+     .sort((a, b) => b.stats.match - a.stats.match || String(b.until).localeCompare(String(a.until)));
+ 
+   const matches = entry.history.filter((h) => h.type === "match");
+@@ -98,7 +104,23 @@ export function buildTeamPage(key, tournaments, players, { organizations = [], p
+     active,
+     former,
+     palmares: palmares.reverse(),
+-    // utilisé plus tard pour les Légendes du club
+-    allMembers: [...stints.keys()].map(toRow),
++    members,
++    legends: members.filter((m) => m.legend.level === "legend"),
++    historic: members.filter((m) => m.legend.level === "historic"),
+   };
+ }
++
++// Statuts de club d'un joueur (Légende / Figure historique) dans toutes les équipes où il est passé
++export function clubStatusesForPlayer(playerId, tournaments, players, options = {}) {
++  const keys = new Map();
++  chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => {
++    if (team.playerIds.includes(playerId)) keys.set(orgKeyOf(team), team.name);
++  }));
++  const out = [];
++  keys.forEach((_name, key) => {
++    const page = buildTeamPage(key, tournaments, players, options);
++    const me = page?.members.find((m) => m.id === playerId);
++    if (me && me.legend.level !== "member") out.push({ teamKey: key, teamName: page.entry.name, level: me.legend.level, reasons: me.legend.reasons, active: me.active });
++  });
++  return out.sort((a, b) => (a.level === "legend" ? 0 : 1) - (b.level === "legend" ? 0 : 1));
++}

@@ -13,7 +13,8 @@ import {
 } from "./valtrackDb";
 import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
 import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo } from "./domain/elo.js";
-import { buildTeamPage } from "./domain/teamPage.js";
+import { buildTeamPage, clubStatusesForPlayer } from "./domain/teamPage.js";
+import { LEGEND_LEVELS } from "./domain/legends.js";
 import { computeParticipation, resolveLineups, compactLineups, isPlayedMap, substitutionSummary } from "./domain/participation.js";
 import { DEFAULT_DATA_FILTERS, tournamentYear, normalizedTeamName, filterTournamentScope, eligiblePlayerIdsForFilters, trimTournamentStatsForFilters, buildFilteredLeaderboardPlayers } from "./domain/filters.js";
 import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
@@ -875,7 +876,7 @@ function EloHistory({ history }) {
 }
 
 // ---------- player detail ----------
-function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = [], onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
+function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = [], clubStatuses = [], onOpenTeam, onAddMatch, onEditProfile, onCorrectStats, onDeletePlayer, onUpdate, onBack }) {
   const [tab, setTab] = useState("profile");
   const [compareOpen, setCompareOpen] = useState(false);
   const history = [...(player.teamHistory || [])].reverse();
@@ -897,6 +898,19 @@ function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = []
                 {currentTeam(player) && <span style={{ color: "var(--steel)", fontSize: 14 }}>{currentTeam(player)}</span>}
                 {player.nationality && <span style={{ fontSize: 13, color: "var(--text-dim)", display: "inline-flex", alignItems: "center", gap: 6 }}><CountryFlag code={player.nationality} /> {countryLabel(player.nationality)}</span>}
               </div>
+              {clubStatuses.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                  {clubStatuses.map((c) => {
+                    const info = LEGEND_LEVELS[c.level];
+                    return (
+                      <button key={c.teamKey} type="button" title={c.reasons.join(" · ")} onClick={() => onOpenTeam?.(c.teamKey)} className="vt-cut-sm"
+                        style={{ background: "var(--panel-raised)", border: `1px solid ${info.color}`, color: info.color, padding: "3px 8px", fontSize: 11, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "'Rajdhani', sans-serif", fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                        {c.level === "legend" && <Crown size={11} />}{info.label} — {c.teamName}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -2152,6 +2166,16 @@ function formatPeriod(since, until, active) {
   return since || until || "—";
 }
 
+function LegendBadge({ level, title }) {
+  if (!level || level === "member") return null;
+  const info = LEGEND_LEVELS[level];
+  return (
+    <span className="vt-label" title={title} style={{ marginLeft: 8, color: info.color, border: `1px solid ${info.color}`, padding: "1px 6px", whiteSpace: "nowrap" }}>
+      {level === "legend" && <Crown size={10} style={{ display: "inline", marginRight: 3, verticalAlign: "-1px" }} />}{info.label}
+    </span>
+  );
+}
+
 function MemberTable({ rows, active, onOpenPlayer, detailed }) {
   const extra = detailed ? [
     { label: "FK / FD", render: (s) => `${num(s.fk)} / ${num(s.fd)}` },
@@ -2178,6 +2202,7 @@ function MemberTable({ rows, active, onOpenPlayer, detailed }) {
               <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
                 <span className="vt-display" style={{ fontWeight: 600, fontSize: 15 }}>{r.player?.name || "?"}</span>
                 {r.substitute && <span className="vt-label" style={{ marginLeft: 8 }}>Remplaçant</span>}
+                <LegendBadge level={r.legend?.level} title={r.legend?.reasons.join(" · ")} />
               </td>
               <td className="vt-mono" style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700 }}>{Math.round(r.elo)}</td>
               <td style={{ padding: "10px 12px", fontSize: 12, color: "var(--text-dim)", whiteSpace: "nowrap" }}>{formatPeriod(r.since, r.until, active)}</td>
@@ -2258,7 +2283,7 @@ function TeamProfile({ teamKey, tournaments, players, organizations, organizatio
     );
   }
 
-  const { entry, rank, wins, losses, bestGain, worstLoss, recent, active, former, palmares } = data;
+  const { entry, rank, wins, losses, bestGain, worstLoss, recent, active, former, palmares, legends, historic } = data;
   const playerName = (id) => players.find((p) => p.id === id)?.name || "?";
   const logo = getLogo(teamLogos, entry.name);
   const isHidden = hiddenTeams.includes(entry.name.trim().toLowerCase());
@@ -2330,6 +2355,38 @@ function TeamProfile({ teamKey, tournaments, players, organizations, organizatio
                   {t.date && <span className="vt-mono" style={{ fontSize: 11, color: "var(--text-dim)", fontWeight: 400 }}>{t.date.slice(0, 4)}</span>}
                 </span>
                 <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{t.playerIds.map(playerName).join(" · ")}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="vt-label" style={{ marginBottom: 4 }}>Légendes du club</div>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
+        Trois chemins mènent au statut de Légende : une longévité exceptionnelle à elle seule, un gros
+        palmarès avec une vraie durée dans l'équipe, ou un ensemble solide longévité + palmarès +
+        performance. Les Figures historiques ont marqué l'équipe sans aller jusque-là.
+      </div>
+      {legends.length + historic.length === 0 ? (
+        <div className="vt-panel vt-cut-sm" style={{ padding: 16, color: "var(--text-dim)", fontSize: 14, marginBottom: 22 }}>Pas encore de légende ni de figure historique.</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10, marginBottom: 22 }}>
+          {[...legends, ...historic].map((m) => {
+            const info = LEGEND_LEVELS[m.legend.level];
+            return (
+              <div key={m.id} className="vt-panel vt-cut-sm vt-row" style={{ padding: 14, cursor: "pointer", borderColor: m.legend.level === "legend" ? "var(--gold)" : undefined }} onClick={() => onOpenPlayer(m.id)}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                  <span className="vt-display" style={{ fontWeight: 700, fontSize: 16 }}>{m.player?.name || "?"}</span>
+                  <span className="vt-label" style={{ color: info.color, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    {m.legend.level === "legend" && <Crown size={11} />}{info.label}
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 8 }}>
+                  {formatPeriod(m.since, m.until, m.active)}{m.active ? " · dans le roster actuel" : ""}
+                </div>
+                {m.legend.reasons.map((reason) => (
+                  <div key={reason} style={{ fontSize: 12, lineHeight: 1.6 }}>{reason}</div>
+                ))}
               </div>
             );
           })}
@@ -2843,6 +2900,11 @@ export default function App() {
   // the raw (non-overlaid) player — used for anything that can save, so the live MVP/MJ
   // snapshot never gets baked into real storage
   const rawActivePlayer = view.name === "player" ? players.find((p) => p.id === view.id) : null;
+  const activePlayerId = view.name === "player" ? view.id : null;
+  const activeClubStatuses = useMemo(
+    () => (activePlayerId ? clubStatusesForPlayer(activePlayerId, tournaments, players, { organizations, playerElo }) : []),
+    [activePlayerId, tournaments, players, organizations, playerElo],
+  );
   const activeTournament = view.name === "tournament" ? tournaments.find((t) => t.id === view.id) : null;
 
   return (
@@ -2964,6 +3026,8 @@ export default function App() {
             player={activePlayer}
             players={displayPlayers}
             eloHistory={playerElo.get(activePlayer.id)?.history || []}
+            clubStatuses={activeClubStatuses}
+            onOpenTeam={openTeam}
             tournaments={tournaments}
             teamLogos={teamLogos}
             onBack={backToLeaderboard}
