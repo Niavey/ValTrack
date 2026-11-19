@@ -21,6 +21,7 @@ begin
     'players', 'tournaments', 'tournament_teams', 'matches',
     'match_player_stats', 'team_logos', 'hidden_teams'
   ] || (case when to_regclass('public.organizations') is not null then array['organizations'] else array[]::text[] end)
+    || (case when to_regclass('public.game_settings') is not null then array['game_settings'] else array[]::text[] end)
   loop
     execute format('alter table public.%I enable row level security', t);
 

@@ -2,20 +2,21 @@ import { useState, useEffect, useMemo, useRef, useDeferredValue } from "react";
 import {
   Search, Plus, Upload, X, ChevronLeft, Crosshair,
   Trash2, ArrowUp, ArrowDown, Swords, Loader2, Pencil, UserCog, ListPlus,
-  Trophy, Award, Image as ImageIcon, Globe, Users, Crown, Flame, GitCompare, Shield, UserX,
+  Trophy, Award, Image as ImageIcon, Globe, Users, Crown, Flame, GitCompare, Shield, UserX, Map as MapIcon,
 } from "lucide-react";
 import "flag-icons/css/flag-icons.min.css";
 import { isSupabaseConfigured, supabase } from "./supabaseClient";
 import {
   loadValtrackData, upsertPlayerDb, upsertPlayersDb, deletePlayerDb,
   upsertTournamentDb, upsertTeamDb, upsertMatchDb, setMatchAppliedDb,
-  setTeamLogoDb, setHiddenTeamDb, upsertOrganizationDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
+  setTeamLogoDb, setHiddenTeamDb, upsertOrganizationDb, saveGameSettingDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
 } from "./valtrackDb";
 import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
 import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo, orgKeyOf, orgNames } from "./domain/elo.js";
 import { buildTeamPage, clubStatusesForPlayer } from "./domain/teamPage.js";
 import { LEGEND_LEVELS } from "./domain/legends.js";
-import { MAPS, AGENTS, ROLES, canonicalAgent, agentRole, agentLogoKey } from "./domain/valorant.js";
+import { ROLES, canonicalAgent, agentRole, agentLogoKey, getAgents, getMaps, setCustomGameData, isCustomMap } from "./domain/valorant.js";
+import { computeMapOverview, computeMapDetail } from "./domain/maps.js";
 import { collectAgentPlays, playerAgentProfile, roleLabel, topAgents as topAgentsOf, computeAgentOverview, computeAgentDetail, AGENT_STATS_CONFIG } from "./domain/agents.js";
 import { computeBestFive, BEST_FIVE_CONFIG } from "./domain/bestFive.js";
 import { computeParticipation, resolveLineups, compactLineups, isPlayedMap, substitutionSummary } from "./domain/participation.js";
@@ -1378,7 +1379,7 @@ const TOURNAMENT_PLAYER_FIELDS = MATCH_INPUT_FIELDS.filter((k) => k !== "maps" &
 
 // nom de la map : liste des maps connues + saisie libre ("Autre…")
 function MapNameInput({ value, onChange }) {
-  const known = !value || MAPS.includes(value);
+  const known = !value || getMaps().includes(value);
   const [custom, setCustom] = useState(!known);
   if (custom) {
     return (
@@ -1390,7 +1391,7 @@ function MapNameInput({ value, onChange }) {
     <select className="vt-select" style={{ width: 110, padding: "7px 8px", color: value ? undefined : "var(--text-dim)" }} value={value}
       onChange={(e) => { if (e.target.value === "__other") { setCustom(true); onChange(""); } else onChange(e.target.value); }}>
       <option value="">Map ?</option>
-      {MAPS.map((name) => <option key={name} value={name}>{name}</option>)}
+      {getMaps().map((name) => <option key={name} value={name}>{name}</option>)}
       <option value="__other">Autre…</option>
     </select>
   );
@@ -1462,6 +1463,9 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
     ? compactLineups(existingMatch.mapScores, initialStarters(teamA, "A"), initialStarters(teamB, "B"))
     : [{ a: "", b: "" }]));
   const [openLineup, setOpenLineup] = useState(null);
+  // veto : bans des deux équipes (rangés sur la 1re map à l'enregistrement) + pick de chaque map
+  const [bans, setBans] = useState(() => existingMatch?.mapScores?.[0]?.veto?.bans || []);
+  const setBan = (idx, field, value) => setBans((list) => list.map((b, i) => (i === idx ? { ...b, [field]: value } : b)));
   const [rows, setRows] = useState(() => {
     if (!existingMatch) return {};
     const out = {};
@@ -1586,6 +1590,13 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13, color: "var(--text-dim)", width: 46 }}>Map {i + 1}</span>
             <MapNameInput value={m.map || ""} onChange={(v) => setMapScore(i, "map", v)} />
+            <select className="vt-select" title="Qui a choisi cette map (veto)" style={{ width: 120, padding: "7px 8px", color: m.pick ? undefined : "var(--text-dim)" }}
+              value={m.pick || ""} onChange={(e) => setMapScore(i, "pick", e.target.value)}>
+              <option value="">Pick ?</option>
+              <option value="A">Pick {teamA?.name || "A"}</option>
+              <option value="B">Pick {teamB?.name || "B"}</option>
+              <option value="decider">Decider</option>
+            </select>
             <input
               type="number" className="vt-input vt-mono" style={{ width: 70 }}
               placeholder={teamA?.name || "A"} value={m.a}
@@ -1660,11 +1671,34 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
           );
         })}
       </div>
-      <datalist id="vt-agent-list">{AGENTS.map((a) => <option key={a.name} value={a.name}>{ROLES[a.role].label}</option>)}</datalist>
+      <datalist id="vt-agent-list">{getAgents().map((a) => <option key={a.name} value={a.name}>{ROLES[a.role].label}</option>)}</datalist>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 8 }}>
         <button className="vt-btn vt-cut-sm" onClick={addMapRow}><Plus size={14} /> Ajouter une map</button>
         <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
           {totalMaps} map{totalMaps > 1 ? "s" : ""} · {totalRounds} round{totalRounds > 1 ? "s" : ""} au total
+        </span>
+      </div>
+
+      <div className="vt-label" style={{ margin: "14px 0 6px" }}>Bans (facultatif)</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {bans.map((b, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13, color: "var(--text-dim)", width: 46 }}>Ban {i + 1}</span>
+            <select className="vt-select" style={{ width: 150, padding: "7px 8px" }} value={b.side} onChange={(e) => setBan(i, "side", e.target.value)}>
+              <option value="A">{teamA?.name || "Équipe A"}</option>
+              <option value="B">{teamB?.name || "Équipe B"}</option>
+            </select>
+            <MapNameInput value={b.map || ""} onChange={(v) => setBan(i, "map", v)} />
+            <button className="vt-btn vt-cut-sm" style={{ padding: "4px 8px" }} onClick={() => setBans((list) => list.filter((_, j) => j !== i))}><Trash2 size={12} /></button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6 }}>
+        <button className="vt-btn vt-cut-sm" onClick={() => setBans((list) => [...list, { side: list.length % 2 === 0 ? "A" : "B", map: "" }])}>
+          <Plus size={14} /> Ajouter un ban
+        </button>
+        <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+          Avec le pick de chaque map, ça alimente les % de pick et de ban de l'onglet Maps.
         </span>
       </div>
 
@@ -1781,7 +1815,7 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
             // chaque map jouée enregistre sa compo exacte ; une map sans score n'en a pas
             const savedMapScores = resolvedMaps.map((m) => {
               if (!isPlayedMap(m)) {
-                const { lineupA: _a, lineupB: _b, agents: _ag, ...rest } = m;
+                const { lineupA: _a, lineupB: _b, agents: _ag, pick: _p, ...rest } = m;
                 return rest;
               }
               // agents : nom officiel, et seulement pour les joueurs présents sur la map
@@ -1791,6 +1825,10 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
                 .filter(([id, a]) => a && present.has(id)));
               const { agents: _old, ...rest } = m;
               return Object.keys(agents).length ? { ...rest, agents } : rest;
+            }).map((m, i) => {
+              const { veto: _v, ...rest } = m;
+              const cleanBans = bans.filter((b) => b.map).map((b) => ({ side: b.side === "B" ? "B" : "A", map: b.map }));
+              return i === 0 && cleanBans.length ? { ...rest, veto: { bans: cleanBans } } : rest;
             });
             onSave(
               {
@@ -2388,18 +2426,21 @@ function TeamsLeaderboard({ tournaments, players = [], organizations = [], teamL
 const pct = (v) => `${Math.round((v || 0) * 100)} %`;
 const fixed = (v, d = 2) => (v === null || v === undefined ? "—" : v.toFixed(d));
 
-function AgentsView({ tournaments, players, teamLogos, onSetLogo, onOpenAgent }) {
-  const overview = useMemo(() => computeAgentOverview(tournaments), [tournaments]);
+function AgentsView({ tournaments, players, teamLogos, onSetLogo, onOpenAgent, gameDataVersion, settingsEnabled, onAddAgent, onRemoveAgent }) {
+  const overview = useMemo(() => computeAgentOverview(tournaments), [tournaments, gameDataVersion]); // eslint-disable-line react-hooks/exhaustive-deps
   const byName = new Map(overview.agents.map((a) => [a.agent, a]));
   // tous les agents connus apparaissent (même jamais joués) pour pouvoir leur ajouter une image
-  const known = new Set(AGENTS.map((a) => a.name));
+  const allAgents = getAgents();
+  const known = new Set(allAgents.map((a) => a.name));
+  const customNames = new Set(allAgents.filter((a) => a.custom).map((a) => a.name));
   const rows = [
     ...overview.agents,
-    ...AGENTS.filter((a) => !byName.has(a.name)).map((a) => ({ agent: a.name, role: a.role, picks: 0, pickRate: 0, maps: 0, winRate: 0, rating: null, bestPlayer: null })),
+    ...allAgents.filter((a) => !byName.has(a.name)).map((a) => ({ agent: a.name, role: a.role, picks: 0, pickRate: 0, maps: 0, winRate: 0, rating: null, bestPlayer: null })),
   ];
   const playerName = (id) => players.find((p) => p.id === id)?.name || "?";
   return (
     <div>
+      <AddGameItemForm kind="agent" enabled={settingsEnabled} onAdd={onAddAgent} />
       <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 16 }}>
         Basé sur les {overview.totalMaps} map{overview.totalMaps > 1 ? "s" : ""} où les agents ont été saisis. Pick rate = part des
         maps où au moins une des deux équipes a pris l'agent. Rating = Rating du match, attribué aux maps jouées
@@ -2423,6 +2464,13 @@ function AgentsView({ tournaments, players, teamLogos, onSetLogo, onOpenAgent })
                     <AgentIcon agent={a.agent} teamLogos={teamLogos} onSetLogo={onSetLogo} size={32} />
                     <span className="vt-display" style={{ fontWeight: 700, fontSize: 15 }}>{a.agent}</span>
                     {!known.has(a.agent) && <span className="vt-label">hors liste</span>}
+                    {customNames.has(a.agent) && <span className="vt-label">ajouté</span>}
+                    {customNames.has(a.agent) && settingsEnabled && (
+                      <button className="vt-btn vt-cut-sm" style={{ padding: "3px 6px", marginLeft: "auto" }} title="Retirer cet agent de la liste"
+                        onClick={(e) => { e.stopPropagation(); if (window.confirm(`Retirer ${a.agent} de la liste des agents ? Les matchs déjà saisis ne changent pas.`)) onRemoveAgent(a.agent); }}>
+                        <X size={11} />
+                      </button>
+                    )}
                   </div>
                 </td>
                 <td style={{ padding: "8px 14px" }}><RoleBadge role={a.role} /></td>
@@ -2442,8 +2490,8 @@ function AgentsView({ tournaments, players, teamLogos, onSetLogo, onOpenAgent })
   );
 }
 
-function AgentDetail({ agent, tournaments, players, teamLogos, onSetLogo, onBack, onOpenPlayer, onOpenTeam }) {
-  const data = useMemo(() => computeAgentDetail(agent, tournaments), [agent, tournaments]);
+function AgentDetail({ agent, tournaments, players, teamLogos, onSetLogo, onBack, onOpenPlayer, onOpenTeam, gameDataVersion }) {
+  const data = useMemo(() => computeAgentDetail(agent, tournaments), [agent, tournaments, gameDataVersion]); // eslint-disable-line react-hooks/exhaustive-deps
   const playerName = (id) => players.find((p) => p.id === id)?.name || "?";
   const ranked = data.players.filter((p) => p.ranked);
   const others = data.players.filter((p) => !p.ranked);
@@ -2523,6 +2571,165 @@ function AgentDetail({ agent, tournaments, players, teamLogos, onSetLogo, onBack
               {getLogo(teamLogos, t.name) && <img src={getLogo(teamLogos, t.name)} className="vt-logo" alt="" />}
               {t.name} <span className="vt-mono" style={{ color: "var(--text-dim)" }}>{t.picks}</span>
             </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- ajout d'agents / de maps ----------
+function AddGameItemForm({ kind, enabled, onAdd }) {
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("duelist");
+  if (!enabled) {
+    return (
+      <div className="vt-panel vt-cut-sm" style={{ padding: 12, fontSize: 12, color: "var(--text-dim)", marginBottom: 16 }}>
+        Pour ajouter {kind === "agent" ? "un agent" : "une map"} depuis l'appli, exécute une fois
+        <span className="vt-mono"> supabase/etape-e-reglages.sql </span> dans Supabase → SQL Editor, puis recharge la page.
+      </div>
+    );
+  }
+  const submit = () => {
+    if (!name.trim()) return;
+    onAdd(name.trim(), role);
+    setName("");
+  };
+  return (
+    <div className="vt-panel vt-cut-sm" style={{ padding: 12, marginBottom: 16, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <span className="vt-label">{kind === "agent" ? "Ajouter un agent" : "Ajouter une map"}</span>
+      <input className="vt-input" style={{ flex: "1 1 180px" }} placeholder={kind === "agent" ? "Nom de l'agent" : "Nom de la map"}
+        value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+      {kind === "agent" && (
+        <select className="vt-select" value={role} onChange={(e) => setRole(e.target.value)}>
+          {["duelist", "controller", "initiator", "sentinel"].map((r) => <option key={r} value={r}>{ROLES[r].label}</option>)}
+        </select>
+      )}
+      <button className="vt-btn vt-btn-primary vt-cut-sm" onClick={submit}><Plus size={14} /> Ajouter</button>
+    </div>
+  );
+}
+
+// ---------- onglet Maps ----------
+function MapsView({ tournaments, gameDataVersion, settingsEnabled, onAddMap, onRemoveMap, onOpenMap }) {
+  const overview = useMemo(() => computeMapOverview(tournaments, getMaps()), [tournaments, gameDataVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  const bar = (v, color) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
+      <div style={{ width: 70, height: 5, background: "var(--panel-raised)" }}><div style={{ height: "100%", width: `${Math.round(v * 100)}%`, background: color }} /></div>
+      <span className="vt-mono" style={{ width: 52, textAlign: "right", fontWeight: 700, whiteSpace: "nowrap" }}>{pct(v)}</span>
+    </div>
+  );
+  return (
+    <div>
+      <AddGameItemForm kind="map" enabled={settingsEnabled} onAdd={(name) => onAddMap(name)} />
+      <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 16 }}>
+        Jouée = part des {overview.playedTotal} maps jouées (avec un nom). Pick, ban et decider = part des {overview.vetoMatches} match{overview.vetoMatches > 1 ? "s" : ""} où
+        le veto a été saisi (choix « Pick » de chaque map et « Bans » dans la fenêtre d'un match).
+      </div>
+      <div className="vt-panel vt-cut vt-scroll" style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--line)" }}>
+              {["Map", "Jouée", "Fois", "Pick", "Ban", "Decider", "Rounds / map", ""].map((h, i) => (
+                <th key={i} className="vt-th" style={{ padding: "10px 14px", textAlign: i === 0 ? "left" : "right", cursor: "default" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {overview.maps.map((m) => (
+              <tr key={m.map} className="vt-row" style={{ borderBottom: "1px solid var(--line)", cursor: "pointer", opacity: m.played || m.bans ? 1 : 0.55 }} onClick={() => onOpenMap(m.map)}>
+                <td style={{ padding: "10px 14px" }}>
+                  <span className="vt-display" style={{ fontWeight: 700, fontSize: 15 }}>{m.map}</span>
+                  {isCustomMap(m.map) && <span className="vt-label" style={{ marginLeft: 8 }}>ajoutée</span>}
+                </td>
+                <td style={{ padding: "10px 14px" }}>{bar(m.playRate, "var(--steel)")}</td>
+                <td className="vt-mono" style={{ padding: "10px 14px", textAlign: "right" }}>{m.played}</td>
+                <td style={{ padding: "10px 14px" }}>{bar(m.pickRate, "var(--green)")}</td>
+                <td style={{ padding: "10px 14px" }}>{bar(m.banRate, "var(--red)")}</td>
+                <td style={{ padding: "10px 14px" }}>{bar(m.deciderRate, "var(--gold)")}</td>
+                <td className="vt-mono" style={{ padding: "10px 14px", textAlign: "right" }}>{m.avgRounds === null ? "—" : m.avgRounds.toFixed(1)}</td>
+                <td style={{ padding: "10px 14px", textAlign: "right" }}>
+                  {isCustomMap(m.map) && settingsEnabled && (
+                    <button className="vt-btn vt-cut-sm" style={{ padding: "4px 7px" }} title="Retirer cette map de la liste"
+                      onClick={(e) => { e.stopPropagation(); if (window.confirm(`Retirer ${m.map} de la liste des maps ? Les matchs déjà saisis ne changent pas.`)) onRemoveMap(m.map); }}>
+                      <X size={12} />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MapDetail({ mapName, tournaments, teamLogos, onBack, onOpenTeam, onOpenAgent }) {
+  const d = useMemo(() => computeMapDetail(mapName, tournaments), [mapName, tournaments]);
+  const teamList = (rows, valueKey, unit, color) => (rows.length === 0 ? (
+    <div className="vt-panel vt-cut-sm" style={{ padding: 14, color: "var(--text-dim)", fontSize: 13 }}>—</div>
+  ) : (
+    <div className="vt-panel vt-cut" style={{ padding: 4 }}>
+      {rows.map((t, i) => (
+        <div key={t.key} className="vt-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 14px", cursor: "pointer", borderBottom: i < rows.length - 1 ? "1px solid var(--line)" : "none" }} onClick={() => onOpenTeam(t.key)}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            {getLogo(teamLogos, t.name) && <img src={getLogo(teamLogos, t.name)} className="vt-logo" alt="" />}
+            <span className="vt-display" style={{ fontWeight: 600 }}>{t.name}</span>
+          </span>
+          <span className="vt-mono" style={{ color }}>{t[valueKey]} {unit}</span>
+        </div>
+      ))}
+    </div>
+  ));
+  return (
+    <div>
+      <button className="vt-btn vt-cut-sm" style={{ marginBottom: 16 }} onClick={onBack}><ChevronLeft size={15} /> Maps</button>
+      <div className="vt-panel vt-cut" style={{ padding: "20px 22px", marginBottom: 20 }}>
+        <h1 className="vt-display" style={{ fontSize: 30, fontWeight: 700, textTransform: "uppercase" }}>{mapName}</h1>
+        <div style={{ fontSize: 13, color: "var(--text-dim)" }}>{d.played} map{d.played > 1 ? "s" : ""} jouée{d.played > 1 ? "s" : ""} · veto saisi sur {d.vetoMatches} match{d.vetoMatches > 1 ? "s" : ""}</div>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 22 }}>
+        <StatCard label="Jouée" value={pct(d.playRate)} />
+        <StatCard label="Pick" value={pct(d.pickRate)} accent="var(--green)" />
+        <StatCard label="Ban" value={pct(d.banRate)} accent="var(--red)" />
+        <StatCard label="Decider" value={pct(d.deciderRate)} accent="var(--gold)" />
+        <StatCard label="Rounds / map" value={d.avgRounds === null ? "—" : d.avgRounds.toFixed(1)} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14, marginBottom: 22 }}>
+        <div><div className="vt-label" style={{ marginBottom: 8 }}>Équipes qui la choisissent le plus</div>{teamList(d.mostPicked, "picks", "pick", "var(--green)")}</div>
+        <div><div className="vt-label" style={{ marginBottom: 8 }}>Équipes qui la bannissent le plus</div>{teamList(d.mostBanned, "bans", "ban", "var(--red)")}</div>
+      </div>
+
+      <div className="vt-label" style={{ marginBottom: 8 }}>Bilan des équipes sur {mapName}</div>
+      {d.teamRecords.length === 0 ? (
+        <div className="vt-panel vt-cut-sm" style={{ padding: 14, color: "var(--text-dim)", fontSize: 13, marginBottom: 22 }}>Aucune map jouée.</div>
+      ) : (
+        <div className="vt-panel vt-cut" style={{ padding: 4, marginBottom: 22 }}>
+          {d.teamRecords.slice(0, 15).map((t, i, arr) => (
+            <div key={t.key} className="vt-row" style={{ display: "grid", gridTemplateColumns: "1fr 90px 70px", alignItems: "center", gap: 8, padding: "8px 14px", cursor: "pointer", borderBottom: i < arr.length - 1 ? "1px solid var(--line)" : "none" }} onClick={() => onOpenTeam(t.key)}>
+              <span className="vt-display" style={{ fontWeight: 600 }}>{t.name}</span>
+              <span className="vt-mono" style={{ textAlign: "right", fontSize: 13 }}><span style={{ color: "var(--green)" }}>{t.wins}</span> – <span style={{ color: "var(--red)" }}>{t.played - t.wins}</span></span>
+              <span className="vt-mono" style={{ textAlign: "right", fontWeight: 700 }}>{pct(t.winRate)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="vt-label" style={{ marginBottom: 8 }}>Agents les plus joués sur {mapName}</div>
+      {d.agents.length === 0 ? (
+        <div className="vt-panel vt-cut-sm" style={{ padding: 14, color: "var(--text-dim)", fontSize: 13 }}>Aucun agent saisi sur cette map.</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 8 }}>
+          {d.agents.map((a) => (
+            <div key={a.agent} className="vt-panel vt-cut-sm vt-row" style={{ padding: 10, display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => onOpenAgent(a.agent)}>
+              <AgentIcon agent={a.agent} teamLogos={teamLogos} size={34} />
+              <div>
+                <div className="vt-display" style={{ fontWeight: 700 }}>{a.agent}</div>
+                <div style={{ fontSize: 12, color: "var(--text-dim)" }}>{pct(a.pickRate)} · {a.picks} map{a.picks > 1 ? "s" : ""}</div>
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -2913,7 +3120,7 @@ function TeamProfile({ teamKey, tournaments, players, organizations, organizatio
 }
 
 // list views keep their remembered scroll position; detail views always open at the top
-const LIST_VIEWS = new Set(["leaderboard", "tournaments", "records", "teams", "agents"]);
+const LIST_VIEWS = new Set(["leaderboard", "tournaments", "records", "teams", "agents", "maps"]);
 
 // players whose object changed between two versions of the list — only those need saving
 function changedPlayers(before, after) {
@@ -2929,6 +3136,10 @@ export default function App() {
   const [hiddenTeams, setHiddenTeams] = useState([]);
   const [organizations, setOrganizations] = useState([]);
   const [organizationsEnabled, setOrganizationsEnabled] = useState(false);
+  // agents / maps ajoutés depuis l'appli ; la version force le recalcul des stats qui en dépendent
+  const [gameSettings, setGameSettings] = useState({ agents: [], maps: [] });
+  const [gameSettingsEnabled, setGameSettingsEnabled] = useState(false);
+  const [gameDataVersion, setGameDataVersion] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [session, setSession] = useState(null);
@@ -2940,7 +3151,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState("rating");
   const [sortDir, setSortDir] = useState("desc");
   const [dataFilters, setDataFilters] = useState(() => ({ ...DEFAULT_DATA_FILTERS, types: { ...DEFAULT_DATA_FILTERS.types } }));
-  const scrollPositions = useRef({ leaderboard: 0, tournaments: 0, records: 0, teams: 0, agents: 0 });
+  const scrollPositions = useRef({ leaderboard: 0, tournaments: 0, records: 0, teams: 0, agents: 0, maps: 0 });
 
   // All writes are optimistic: the UI updates immediately, then Supabase is updated in the
   // background. Writes run one after another (never in parallel) so an older save can't land
@@ -3006,6 +3217,10 @@ export default function App() {
         setTournaments((data.tournaments || []).map(migrateTournament));
         setTeamLogos(data.teamLogos || {});
         setHiddenTeams(data.hiddenTeams || []);
+        setCustomGameData(data.gameSettings || {});
+        setGameSettings(data.gameSettings || { agents: [], maps: [] });
+        setGameSettingsEnabled(Boolean(data.gameSettingsEnabled));
+        setGameDataVersion((v) => v + 1);
         setOrganizations(data.organizations || []);
         setOrganizationsEnabled(Boolean(data.organizationsEnabled));
         setSaveError("");
@@ -3082,6 +3297,24 @@ export default function App() {
       "la sauvegarde du logo"
     );
   };
+
+  const updateGameSettings = (key, value) => {
+    const next = { ...gameSettings, [key]: value };
+    setCustomGameData(next);
+    setGameSettings(next);
+    setGameDataVersion((v) => v + 1);
+    persist(() => saveGameSettingDb(key, value), key === "agents" ? "l'ajout d'agent" : "l'ajout de map");
+  };
+  const addCustomAgent = (name, role) => {
+    if (agentRole(name)) { setSaveError(`${canonicalAgent(name)} existe déjà dans la liste des agents.`); return; }
+    updateGameSettings("agents", [...gameSettings.agents, { name, role }]);
+  };
+  const removeCustomAgent = (name) => updateGameSettings("agents", gameSettings.agents.filter((a) => a.name !== name));
+  const addCustomMap = (name) => {
+    if (getMaps().some((m) => m.toLowerCase() === name.toLowerCase())) { setSaveError(`${name} existe déjà dans la liste des maps.`); return; }
+    updateGameSettings("maps", [...gameSettings.maps, name]);
+  };
+  const removeCustomMap = (name) => updateGameSettings("maps", gameSettings.maps.filter((m) => m !== name));
 
   const saveOrganization = (org) => {
     setOrganizations((prev) => (prev.some((o) => o.id === org.id) ? prev.map((o) => (o.id === org.id ? org : o)) : [...prev, org]));
@@ -3392,7 +3625,7 @@ export default function App() {
   const rawActivePlayer = view.name === "player" ? players.find((p) => p.id === view.id) : null;
   const activePlayerId = view.name === "player" ? view.id : null;
   // une ligne par joueur et par map où son agent est connu (profils, rôles, agent habituel)
-  const agentPlays = useMemo(() => collectAgentPlays(tournaments), [tournaments]);
+  const agentPlays = useMemo(() => collectAgentPlays(tournaments), [tournaments, gameDataVersion]); // eslint-disable-line react-hooks/exhaustive-deps
   const usualAgents = useMemo(() => {
     const counts = new Map();
     agentPlays.forEach((p) => {
@@ -3480,20 +3713,38 @@ export default function App() {
           >
             <Crosshair size={14} /> Agents
           </button>
+          <button
+            className="vt-btn vt-cut-sm"
+            style={{ background: (view.name === "maps" || view.name === "map") ? "var(--panel-raised)" : "var(--panel)", borderColor: (view.name === "maps" || view.name === "map") ? "var(--steel)" : "var(--line)" }}
+            onClick={() => setView({ name: "maps" })}
+          >
+            <MapIcon size={14} /> Maps
+          </button>
         </div>
 
         {view.name === "records" && <RecordsView tournaments={tournaments} players={players} filters={dataFilters} onFiltersChange={setDataFilters} />}
         {view.name === "teams" && <TeamsLeaderboard tournaments={tournaments} players={players} organizations={organizations} teamLogos={teamLogos} hiddenTeams={hiddenTeams} onToggleHidden={toggleHiddenTeam} onOpenTeam={openTeam} />}
         {view.name === "agents" && (
-          <AgentsView tournaments={tournaments} players={players} teamLogos={teamLogos} onSetLogo={setLogo} onOpenAgent={(agent) => { scrollPositions.current.agents = window.scrollY; setView({ name: "agent", agent }); }} />
+          <AgentsView tournaments={tournaments} players={players} teamLogos={teamLogos} onSetLogo={setLogo}
+            gameDataVersion={gameDataVersion} settingsEnabled={gameSettingsEnabled} onAddAgent={addCustomAgent} onRemoveAgent={removeCustomAgent} onOpenAgent={(agent) => { scrollPositions.current.agents = window.scrollY; setView({ name: "agent", agent }); }} />
         )}
         {view.name === "agent" && (
           <AgentDetail
-            agent={view.agent} tournaments={tournaments} players={players} teamLogos={teamLogos} onSetLogo={setLogo}
+            agent={view.agent} tournaments={tournaments} players={players} teamLogos={teamLogos} onSetLogo={setLogo} gameDataVersion={gameDataVersion}
             onBack={() => setView({ name: "agents" })}
             onOpenPlayer={(id) => setView({ name: "player", id })}
             onOpenTeam={openTeam}
           />
+        )}
+        {view.name === "maps" && (
+          <MapsView tournaments={tournaments} gameDataVersion={gameDataVersion} settingsEnabled={gameSettingsEnabled}
+            onAddMap={addCustomMap} onRemoveMap={removeCustomMap}
+            onOpenMap={(map) => { scrollPositions.current.maps = window.scrollY; setView({ name: "map", map }); }} />
+        )}
+        {view.name === "map" && (
+          <MapDetail mapName={view.map} tournaments={tournaments} teamLogos={teamLogos}
+            onBack={() => setView({ name: "maps" })} onOpenTeam={openTeam}
+            onOpenAgent={(agent) => setView({ name: "agent", agent })} />
         )}
         {view.name === "team" && (
           <TeamProfile

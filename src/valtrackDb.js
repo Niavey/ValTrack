@@ -235,6 +235,30 @@ async function loadOrganizations() {
   return rows.map((r) => ({ id: r.id, name: r.name || "", rosterOverride: r.roster_override || null }));
 }
 
+// Agents et maps ajoutés depuis l'appli : table game_settings (script etape-e-reglages.sql).
+// Absente → on garde les listes intégrées, sans erreur.
+let gameSettingsEnabled = false;
+export const hasGameSettings = () => gameSettingsEnabled;
+
+async function loadGameSettings() {
+  const { data, error } = await supabase.from("game_settings").select("key,value");
+  if (error) {
+    gameSettingsEnabled = false;
+    console.info("[ValTrack] Réglages de jeu désactivés (script etape-e-reglages.sql non exécuté) :", error.message);
+    return { agents: [], maps: [] };
+  }
+  gameSettingsEnabled = true;
+  const byKey = Object.fromEntries((data || []).map((r) => [r.key, r.value]));
+  return { agents: Array.isArray(byKey.agents) ? byKey.agents : [], maps: Array.isArray(byKey.maps) ? byKey.maps : [] };
+}
+
+export async function saveGameSettingDb(key, value) {
+  ensureConfigured();
+  if (!gameSettingsEnabled) throw new Error("Ajout impossible : exécute d'abord supabase/etape-e-reglages.sql dans Supabase.");
+  const { error } = await supabase.from("game_settings").upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
+  throwIfError(error);
+}
+
 export async function upsertOrganizationDb(org) {
   ensureConfigured();
   if (!organizationsEnabled) throw new Error("Les organisations ne sont pas encore activées : exécute supabase/etape-c-organisations.sql.");
@@ -274,6 +298,7 @@ export async function loadValtrackData() {
   const statRows = await fetchAll("match_player_stats");
   const hiddenRows = await fetchAll("hidden_teams");
   const organizations = await loadOrganizations();
+  const gameSettings = await loadGameSettings();
 
   // Les logos ne sont plus chargés ici : ils sont récupérés en arrière-plan
   // après l'affichage de l'application pour ne pas bloquer le démarrage.
@@ -339,7 +364,7 @@ export async function loadValtrackData() {
 
   const hiddenTeams = hiddenRows.map((r) => r.team_key);
 
-  return { players, tournaments, teamLogos: {}, hiddenTeams, organizations, organizationsEnabled };
+  return { players, tournaments, teamLogos: {}, hiddenTeams, organizations, organizationsEnabled, gameSettings, gameSettingsEnabled };
 }
 
 export async function loadTeamLogosDb(onLogo) {
