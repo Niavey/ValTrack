@@ -31,3 +31,6 @@ dist-ssr
 # Fichiers Windows
 desktop.ini
 Thumbs.db
+
+# Patchs de transfert (ne pas commiter)
+*.patch
