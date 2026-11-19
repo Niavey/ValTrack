@@ -199,14 +199,48 @@ const tournamentToRow = (t) => ({
   updated_at: new Date().toISOString(),
 });
 
+// Les organisations n'existent dans la base qu'après le script supabase/etape-c-organisations.sql.
+// Tant qu'il n'a pas été exécuté, l'appli regroupe les équipes par nom (comme avant) et
+// n'envoie jamais la colonne organization_id, pour ne pas faire échouer les sauvegardes.
+let organizationsEnabled = false;
+export const hasOrganizations = () => organizationsEnabled;
+
 const teamToRow = (tournamentId, team) => ({
   id: team.id,
   tournament_id: tournamentId,
   name: team.name || "",
   player_ids: team.playerIds || [],
   eliminated: Boolean(team.eliminated),
+  ...(organizationsEnabled ? { organization_id: team.organizationId || null } : {}),
   updated_at: new Date().toISOString(),
 });
+
+const organizationToRow = (org) => ({
+  id: org.id,
+  name: org.name || "",
+  roster_override: org.rosterOverride?.length ? org.rosterOverride : null,
+  updated_at: new Date().toISOString(),
+});
+
+async function loadOrganizations() {
+  const { error } = await supabase.from("organizations").select("id").limit(1);
+  if (error) {
+    // table absente (42P01 / PGRST205) : fonctionnalité désactivée, tout le reste marche
+    organizationsEnabled = false;
+    console.info("[ValTrack] Organisations désactivées (script SQL de l'étape C non exécuté) :", error.message);
+    return [];
+  }
+  organizationsEnabled = true;
+  const rows = await fetchAll("organizations");
+  return rows.map((r) => ({ id: r.id, name: r.name || "", rosterOverride: r.roster_override || null }));
+}
+
+export async function upsertOrganizationDb(org) {
+  ensureConfigured();
+  if (!organizationsEnabled) throw new Error("Les organisations ne sont pas encore activées : exécute supabase/etape-c-organisations.sql.");
+  const { error } = await supabase.from("organizations").upsert(organizationToRow(org), { onConflict: "id" });
+  throwIfError(error);
+}
 
 const matchToRow = (tournamentId, match) => ({
   id: match.id,
@@ -239,6 +273,7 @@ export async function loadValtrackData() {
   const matchRows = await fetchAll("matches");
   const statRows = await fetchAll("match_player_stats");
   const hiddenRows = await fetchAll("hidden_teams");
+  const organizations = await loadOrganizations();
 
   // Les logos ne sont plus chargés ici : ils sont récupérés en arrière-plan
   // après l'affichage de l'application pour ne pas bloquer le démarrage.
@@ -266,6 +301,7 @@ export async function loadValtrackData() {
       name: row.name || "",
       playerIds: row.player_ids || [],
       eliminated: Boolean(row.eliminated),
+      organizationId: row.organization_id || null,
     });
   }
 
@@ -303,7 +339,7 @@ export async function loadValtrackData() {
 
   const hiddenTeams = hiddenRows.map((r) => r.team_key);
 
-  return { players, tournaments, teamLogos: {}, hiddenTeams };
+  return { players, tournaments, teamLogos: {}, hiddenTeams, organizations, organizationsEnabled };
 }
 
 export async function loadTeamLogosDb(onLogo) {

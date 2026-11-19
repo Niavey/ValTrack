@@ -46,6 +46,7 @@ export const COUNTRIES = [
 
 // canonical stat fields, in the exact order requested
 export const STAT_FIELDS = [
+  { key: "elo", label: "Elo", decimals: 0 }, // calculé, affiché en premier
   { key: "match", label: "Match", decimals: 0 },
   { key: "maps", label: "Maps", decimals: 0 },
   { key: "round", label: "Round", decimals: 0 },
@@ -67,7 +68,6 @@ export const STAT_FIELDS = [
   { key: "clutchPct", label: "Clutch %", decimals: 0, suffix: "%" },
   { key: "mvp", label: "MVP", decimals: 0 },
   { key: "mj", label: "MJ", decimals: 0 },
-  { key: "elo", label: "Elo", decimals: 0 },
 ];
 
 export const HEADLINE_KEYS = ["elo", "rating", "acs", "kd", "kda", "kast", "clutchPct", "mvp", "mj"];
@@ -243,6 +243,22 @@ export function currentTeam(player) {
   if (!h.length) return "";
   const last = h[h.length - 1];
   return last.until ? "" : last.team;
+}
+
+// Agent libre : le joueur a déjà eu une équipe, mais sa dernière est terminée (date "jusqu'à").
+// Un joueur sans aucun historique n'est PAS agent libre : on ne sait simplement rien de lui.
+export function isFreeAgent(player) {
+  const h = player?.teamHistory || [];
+  return h.length > 0 && Boolean(h[h.length - 1].until);
+}
+
+// Transfert : clôt l'équipe en cours (ou les équipes ouvertes) et ajoute la nouvelle.
+// newTeam vide = le joueur devient agent libre.
+export function transferPlayer(player, newTeam, date = new Date().toISOString().slice(0, 10)) {
+  const history = (player.teamHistory || []).map((e) => (e.until ? e : { ...e, until: date }));
+  const team = String(newTeam || "").trim();
+  if (team) history.push({ id: uid(), team, since: date, until: "" });
+  return { ...player, teamHistory: history };
 }
 
 // label for a team-history row: "depuis X" only for the still-current spell; a closed spell

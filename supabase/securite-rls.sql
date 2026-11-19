@@ -20,7 +20,8 @@ begin
   foreach t in array array[
     'players', 'tournaments', 'tournament_teams', 'matches',
     'match_player_stats', 'team_logos', 'hidden_teams'
-  ] loop
+  ] || (case when to_regclass('public.organizations') is not null then array['organizations'] else array[]::text[] end)
+  loop
     execute format('alter table public.%I enable row level security', t);
 
     -- supprime les anciennes règles (probablement "tout le monde peut tout faire")

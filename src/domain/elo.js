@@ -1,4 +1,4 @@
-import { num } from "./stats.js";
+import { num, currentTeam, isFreeAgent } from "./stats.js";
 import { computeParticipation, playedMaps } from "./participation.js";
 
 // Elo individuel des joueurs
@@ -89,7 +89,12 @@ export function chronologicalTournaments(tournaments) {
   return [...(tournaments || [])].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 }
 
-const teamKey = (name) => String(name || "").trim().toLowerCase();
+// Identité d'une équipe dans le temps : son organisation si elle est rattachée à une, sinon
+// son nom (casse et espaces ignorés), comme avant l'étape C.
+export function orgKeyOf(team) {
+  if (team?.organizationId) return team.organizationId;
+  return "name:" + String(team?.name || "").trim().toLowerCase();
+}
 
 // Rejoue tous les matchs et renvoie :
 //   players : Map playerId → { elo, history[] }
@@ -102,10 +107,10 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
     if (!players.has(id)) players.set(id, { elo: config.start, history: [] });
     return players.get(id);
   };
-  const teamEntry = (name) => {
-    const key = teamKey(name);
-    if (!teams.has(key)) teams.set(key, { name, history: [] });
-    teams.get(key).name = name; // garde la dernière écriture du nom
+  const teamEntry = (team) => {
+    const key = orgKeyOf(team);
+    if (!teams.has(key)) teams.set(key, { name: team.name, history: [] });
+    teams.get(key).name = team.name; // garde le dernier nom utilisé
     return teams.get(key);
   };
 
@@ -171,7 +176,7 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
           teamWeight += w;
         });
 
-        teamEntry(sides[side].name).history.push({
+        teamEntry(sides[side]).history.push({
           type: "match", tournamentName: t.name, matchLabel: m.label, opponentName: opponent.name,
           result: won ? "W" : "L", delta: teamWeight ? teamDeltaSum / teamWeight : 0,
           strengthBefore: side === "A" ? strengthA : strengthB,
@@ -190,7 +195,7 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
           entry.elo = clamp(before + bonus);
           entry.history.push({ type: "trophy", tournamentId: t.id, tournamentName: t.name, tournamentType: t.type, teamName: winnerTeam.name, delta: entry.elo - before, eloAfter: entry.elo });
         });
-        teamEntry(winnerTeam.name).history.push({ type: "trophy", tournamentName: t.name, tournamentType: t.type, delta: bonus });
+        teamEntry(winnerTeam).history.push({ type: "trophy", tournamentName: t.name, tournamentType: t.type, delta: bonus });
       }
     }
   });
@@ -198,75 +203,95 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
   return { players, teams };
 }
 
-// Les 5 joueurs principaux d'une équipe : son dernier tournoi, classés par maps jouées dans ce
-// tournoi (un remplaçant passe donc après les titulaires).
-export function currentMainRoster(name, tournaments, config = ELO_CONFIG) {
-  const key = teamKey(name);
+// Les 5 joueurs principaux d'une organisation : son dernier tournoi, classés par maps jouées
+// dans ce tournoi (un remplaçant passe donc après les titulaires). Si un roster a été corrigé à
+// la main (rosterOverride), c'est lui qui fait foi.
+// Équipe actuelle déclarée sur le profil d'un joueur : c'est elle qui fait foi pour le roster
+// actif (un joueur transféré quitte son ancien club, un agent libre n'est dans aucun roster).
+// "unknown" = profil sans historique d'équipe : on se fie alors aux tournois, comme avant.
+export function declaredClub(player) {
+  if (!player || !(player.teamHistory || []).length) return { status: "unknown" };
+  if (isFreeAgent(player)) return { status: "free" };
+  return { status: "team", name: String(currentTeam(player) || "").trim().toLowerCase() };
+}
+
+// Noms (en minuscules) sous lesquels une organisation a été inscrite, + son nom officiel
+export function orgNames(key, tournaments, organization = null) {
+  const names = new Set();
+  (tournaments || []).forEach((t) => t.teams.forEach((team) => {
+    if (orgKeyOf(team) === key) names.add(String(team.name || "").trim().toLowerCase());
+  }));
+  if (organization?.name) names.add(organization.name.trim().toLowerCase());
+  if (key.startsWith("name:")) names.add(key.slice(5));
+  return names;
+}
+
+export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterOverride = null, players = null, organization = null) {
   const ordered = chronologicalTournaments(tournaments);
-  for (let i = ordered.length - 1; i >= 0; i--) {
-    const t = ordered[i];
-    const team = t.teams.find((x) => teamKey(x.name) === key);
-    if (!team) continue;
-    const mapsPlayed = new Map(team.playerIds.map((id) => [id, 0]));
-    (t.matches || []).forEach((m) => {
-      if (m.teamAId !== team.id && m.teamBId !== team.id) return;
-      const teamA = t.teams.find((x) => x.id === m.teamAId);
-      const teamB = t.teams.find((x) => x.id === m.teamBId);
-      const side = m.teamAId === team.id ? "A" : "B";
+  let last = null;
+  for (let i = ordered.length - 1; i >= 0 && !last; i--) {
+    const team = ordered[i].teams.find((x) => orgKeyOf(x) === key);
+    if (team) last = { tournament: ordered[i], team };
+  }
+  const mapsPlayed = new Map();
+  if (last) {
+    (last.tournament.matches || []).forEach((m) => {
+      if (m.teamAId !== last.team.id && m.teamBId !== last.team.id) return;
+      const teamA = last.tournament.teams.find((x) => x.id === m.teamAId);
+      const teamB = last.tournament.teams.find((x) => x.id === m.teamBId);
+      const side = m.teamAId === last.team.id ? "A" : "B";
       computeParticipation(m, teamA, teamB).forEach((p, id) => {
-        if (p.side === side && mapsPlayed.has(id)) mapsPlayed.set(id, mapsPlayed.get(id) + Math.max(1, p.maps));
+        if (p.side === side) mapsPlayed.set(id, (mapsPlayed.get(id) || 0) + Math.max(1, p.maps));
       });
     });
-    const sorted = [...team.playerIds].sort((a, b) => mapsPlayed.get(b) - mapsPlayed.get(a));
-    return { tournament: t, team, main: sorted.slice(0, config.mainPlayers), others: sorted.slice(config.mainPlayers) };
   }
-  return null;
+  let candidates = rosterOverride?.length ? rosterOverride : (last?.team.playerIds || []);
+  if (players) {
+    // un seul club à la fois : on retire les joueurs partis ailleurs ou agents libres, et on
+    // ajoute ceux dont le profil indique qu'ils ont rejoint ce club (recrue sans match joué)
+    const names = orgNames(key, tournaments, organization);
+    const byId = new Map(players.map((p) => [p.id, p]));
+    candidates = candidates.filter((id) => {
+      const club = declaredClub(byId.get(id));
+      return club.status === "unknown" || (club.status === "team" && names.has(club.name));
+    });
+    players.forEach((p) => {
+      const club = declaredClub(p);
+      if (club.status === "team" && names.has(club.name) && !candidates.includes(p.id)) candidates = [...candidates, p.id];
+    });
+  }
+  if (!candidates.length) return null;
+  const sorted = [...candidates].sort((a, b) => (mapsPlayed.get(b) || 0) - (mapsPlayed.get(a) || 0));
+  return {
+    tournament: last?.tournament || null, team: last?.team || null, manual: Boolean(rosterOverride?.length),
+    main: sorted.slice(0, config.mainPlayers), others: sorted.slice(config.mainPlayers),
+  };
 }
 
 // Classement des équipes : Elo actuel = moyenne des Elo des 5 joueurs principaux.
-export function computeTeamElo(tournaments, config = ELO_CONFIG) {
-  const { players, teams } = computeEloState(tournaments, config);
+export function computeTeamElo(tournaments, config = ELO_CONFIG, organizations = [], players = null) {
+  const { players: eloByPlayer, teams } = computeEloState(tournaments, config);
+  const orgs = new Map((organizations || []).map((o) => [o.id, o]));
   const names = new Map();
-  chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => names.set(teamKey(team.name), team.name)));
+  chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => names.set(orgKeyOf(team), team.name)));
 
   const ranking = [];
-  names.forEach((name, key) => {
-    const roster = currentMainRoster(name, tournaments, config);
+  names.forEach((lastName, key) => {
+    const org = orgs.get(key);
+    const roster = currentMainRoster(key, tournaments, config, org?.rosterOverride, players, org);
     const main = roster?.main || [];
-    const playerElos = main.map((id) => ({ id, elo: players.get(id)?.elo ?? config.start }));
+    const playerElos = main.map((id) => ({ id, elo: eloByPlayer.get(id)?.elo ?? config.start }));
     // une équipe qui n'a encore rien joué est quand même classée avec l'Elo de ses joueurs
     const history = teams.get(key)?.history || [];
-    const elo = playerElos.length ? playerElos.reduce((s, p) => s + p.elo, 0) / playerElos.length : config.start;
-    ranking.push({ name, elo, history, roster: playerElos, substitutes: roster?.others || [] });
+    const elo = playerElos.length ? playerElos.reduce((sum, p) => sum + p.elo, 0) / playerElos.length : config.start;
+    ranking.push({
+      key, name: org?.name || lastName, elo, history, organization: org || null,
+      roster: playerElos, substitutes: roster?.others || [], manualRoster: Boolean(roster?.manual),
+    });
   });
   return ranking.sort((a, b) => b.elo - a.elo);
 }
 
 export function computePlayerElo(tournaments, config = ELO_CONFIG) {
   return computeEloState(tournaments, config).players;
-}
-
-// everything shown on a team's profile page: bilan, extremes, palmarès, roster, recent history
-export function getTeamProfile(nameKey, tournaments, players) {
-  const ranking = computeTeamElo(tournaments);
-  const idx = ranking.findIndex((t) => t.name.trim().toLowerCase() === nameKey);
-  if (idx === -1) return null;
-  const entry = ranking[idx];
-  const matches = entry.history.filter((h) => h.type === "match");
-  const wins = matches.filter((h) => h.result === "W").length;
-  const losses = matches.filter((h) => h.result === "L").length;
-  const bestGain = matches.length ? matches.reduce((a, b) => (b.delta > a.delta ? b : a)) : null;
-  const worstLoss = matches.length ? matches.reduce((a, b) => (b.delta < a.delta ? b : a)) : null;
-  const trophies = entry.history.filter((h) => h.type === "trophy");
-
-  const playerIdSet = new Set();
-  tournaments.forEach((t) => t.teams.forEach((team) => {
-    if (team.name.trim().toLowerCase() === nameKey) team.playerIds.forEach((id) => playerIdSet.add(id));
-  }));
-  const roster = [...playerIdSet].map((id) => players.find((p) => p.id === id)).filter(Boolean);
-
-  return {
-    entry, rank: idx + 1, wins, losses, bestGain, worstLoss, trophies, roster,
-    recent: [...entry.history].reverse().slice(0, 12),
-  };
 }

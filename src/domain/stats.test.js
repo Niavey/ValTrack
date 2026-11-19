@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   num, normPct, computeDerived, computeMatchDerived, applyMatchToStats, removeMatchFromStats,
-  emptyStats, fmtStat, STAT_FIELDS, statCompareAsc, mapRow, currentTeam, resetAverageCounts,
+  emptyStats, fmtStat, STAT_FIELDS, statCompareAsc, mapRow, currentTeam, resetAverageCounts, transferPlayer, isFreeAgent,
 } from "./stats.js";
 
 const field = (key) => STAT_FIELDS.find((f) => f.key === key);
@@ -130,5 +130,24 @@ describe("affichage et tri", () => {
   it("currentTeam ignore une équipe quittée", () => {
     expect(currentTeam({ teamHistory: [{ team: "A" }, { team: "B" }] })).toBe("B");
     expect(currentTeam({ teamHistory: [{ team: "A", until: "2025" }] })).toBe("");
+  });
+});
+
+describe("transferPlayer / isFreeAgent", () => {
+  it("clôt l'équipe en cours et ajoute la nouvelle", () => {
+    const p = { teamHistory: [{ id: "1", team: "Anatolia", since: "2025-01-01", until: "" }] };
+    const moved = transferPlayer(p, "Fire Flux", "2026-02-01");
+    expect(moved.teamHistory.map((e) => [e.team, e.until])).toEqual([["Anatolia", "2026-02-01"], ["Fire Flux", ""]]);
+    expect(currentTeam(moved)).toBe("Fire Flux");
+    expect(isFreeAgent(moved)).toBe(false);
+  });
+  it("sans nouvelle équipe, le joueur devient agent libre", () => {
+    const p = { teamHistory: [{ id: "1", team: "Anatolia", since: "2025-01-01", until: "" }] };
+    const free = transferPlayer(p, "", "2026-02-01");
+    expect(isFreeAgent(free)).toBe(true);
+    expect(currentTeam(free)).toBe("");
+  });
+  it("un joueur sans historique n'est pas agent libre", () => {
+    expect(isFreeAgent({ teamHistory: [] })).toBe(false);
   });
 });
