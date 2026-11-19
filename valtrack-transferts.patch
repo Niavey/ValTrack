@@ -1,0 +1,520 @@
+diff --git a/src/App.jsx b/src/App.jsx
+index 6f6dc15..170e890 100644
+--- a/src/App.jsx
++++ b/src/App.jsx
+@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useDeferredValue } from "react";
+ import {
+   Search, Plus, Upload, X, ChevronLeft, Crosshair,
+   Trash2, ArrowUp, ArrowDown, Swords, Loader2, Pencil, UserCog, ListPlus,
+-  Trophy, Award, Image as ImageIcon, Globe, Users, Crown, Flame, GitCompare, Shield,
++  Trophy, Award, Image as ImageIcon, Globe, Users, Crown, Flame, GitCompare, Shield, UserX,
+ } from "lucide-react";
+ import "flag-icons/css/flag-icons.min.css";
+ import { isSupabaseConfigured, supabase } from "./supabaseClient";
+@@ -12,12 +12,12 @@ import {
+   setTeamLogoDb, setHiddenTeamDb, upsertOrganizationDb, migrateLegacySnapshotDb, readLegacyWindowStorage, loadTeamLogosDb,
+ } from "./valtrackDb";
+ import { computeMvpMjCounts, collectMatchRecords, collectMatchDurationRecords, validRecordEntries, pickBest, pickWorst } from "./domain/records.js";
+-import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo } from "./domain/elo.js";
++import { ELO_MAX, ELO_START, computeTeamElo, computePlayerElo, orgKeyOf, orgNames } from "./domain/elo.js";
+ import { buildTeamPage, clubStatusesForPlayer } from "./domain/teamPage.js";
+ import { LEGEND_LEVELS } from "./domain/legends.js";
+ import { computeParticipation, resolveLineups, compactLineups, isPlayedMap, substitutionSummary } from "./domain/participation.js";
+ import { DEFAULT_DATA_FILTERS, tournamentYear, normalizedTeamName, filterTournamentScope, eligiblePlayerIdsForFilters, trimTournamentStatsForFilters, buildFilteredLeaderboardPlayers } from "./domain/filters.js";
+-import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
++import { uid, num, round, normalizeHeader, COUNTRIES, STAT_FIELDS, HEADLINE_KEYS, RECORD_FIELDS, DETAIL_STAT_FIELDS, STAT_LABELS, MATCH_INPUT_FIELDS, RANK_ASCENDING, TROPHY_TYPES, TROPHY_RANK, TROPHY_COLOR, FORM_INPUT_FIELDS, computeMatchDerived, computeDerived, mapRow, emptyStats, fmtStat, evolutionColor, currentTeam, isFreeAgent, transferPlayer, teamPeriodLabel, statCompareAsc, getLogo, getRank, countryLabel, migratePlayer, migrateTournament, applyMatchToStats, removeMatchFromStats, resetAverageCounts } from "./domain/stats.js";
+ 
+ const STORAGE_KEY = "vt_players_v2";
+ const TOURNAMENTS_KEY = "vt_tournaments_v1";
+@@ -345,6 +345,26 @@ function NationalitySelect({ value, onChange }) {
+   );
+ }
+ 
++// Statut "agent libre" : volontairement différent d'un logo (pointillés, icône barrée)
++function FreeAgentIcon({ size = 20 }) {
++  return (
++    <span title="Agent libre" style={{
++      width: size, height: size, flexShrink: 0, borderRadius: "50%", border: "1px dashed var(--gold)",
++      color: "var(--gold)", display: "inline-flex", alignItems: "center", justifyContent: "center",
++    }}>
++      <UserX size={Math.round(size * 0.6)} />
++    </span>
++  );
++}
++
++function FreeAgentBadge() {
++  return (
++    <span className="vt-label" style={{ color: "var(--gold)", border: "1px dashed var(--gold)", padding: "1px 6px", display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
++      <UserX size={10} /> Agent libre
++    </span>
++  );
++}
++
+ // ---------- player creation ----------
+ function PlayerFormModal({ onClose, onSave }) {
+   const [name, setName] = useState("");
+@@ -408,11 +428,19 @@ function ProfileEditModal({ player, teamLogos, onSetLogo, onClose, onSave }) {
+   const [newTeam, setNewTeam] = useState("");
+   const [newSince, setNewSince] = useState("");
+ 
++  const today = () => new Date().toISOString().slice(0, 10);
++  // Transfert : l'équipe en cours est automatiquement clôturée, un joueur n'a qu'un club à la fois
++  const withTransfer = (h, team, since) => [
++    ...h.map((e) => (e.until ? e : { ...e, until: since || today() })),
++    { id: uid(), team, since: since || today(), until: "" },
++  ];
+   const addEntry = () => {
+     if (!newTeam.trim()) return;
+-    setHistory((h) => [...h, { id: uid(), team: newTeam.trim(), since: newSince.trim(), until: "" }]);
++    setHistory((h) => withTransfer(h, newTeam.trim(), newSince.trim()));
+     setNewTeam(""); setNewSince("");
+   };
++  const releasePlayer = () => setHistory((h) => h.map((e) => (e.until ? e : { ...e, until: today() })));
++  const freeAgent = history.length > 0 && Boolean(history[history.length - 1].until);
+   const removeEntry = (id) => setHistory((h) => h.filter((e) => e.id !== id));
+   const updateEntry = (id, field, value) => setHistory((h) => h.map((e) => (e.id === id ? { ...e, [field]: value } : e)));
+ 
+@@ -427,7 +455,16 @@ function ProfileEditModal({ player, teamLogos, onSetLogo, onClose, onSave }) {
+         </Field>
+       </div>
+ 
+-      <div className="vt-label" style={{ margin: "16px 0 8px" }}>Historique d'équipes</div>
++      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, margin: "16px 0 8px", flexWrap: "wrap" }}>
++        <div className="vt-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
++          Historique d'équipes {freeAgent && <FreeAgentBadge />}
++        </div>
++        {history.some((e) => !e.until) && (
++          <button type="button" className="vt-btn vt-cut-sm" style={{ padding: "4px 9px", fontSize: 11 }} onClick={releasePlayer} title="Clôture son équipe actuelle aujourd'hui">
++            <UserX size={12} /> Rendre agent libre
++          </button>
++        )}
++      </div>
+       {history.length === 0 && <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 10 }}>Aucune équipe enregistrée.</div>}
+       {history.map((e, i) => {
+         const isCurrent = i === history.length - 1 && !e.until;
+@@ -456,13 +493,12 @@ function ProfileEditModal({ player, teamLogos, onSetLogo, onClose, onSave }) {
+         <TeamLogoUpload team={newTeam} teamLogos={teamLogos} onSetLogo={onSetLogo} />
+         <input className="vt-input" style={{ flex: "2 1 160px" }} placeholder="Nom de l'équipe" value={newTeam} onChange={(e) => setNewTeam(e.target.value)} />
+         <input className="vt-input" style={{ flex: "1 1 120px" }} placeholder="Depuis (ex : 2024, Jan. 2024)" value={newSince} onChange={(e) => setNewSince(e.target.value)} />
+-        <button className="vt-btn vt-cut-sm" onClick={addEntry}><Plus size={14} /> Ajouter</button>
++        <button className="vt-btn vt-cut-sm" onClick={addEntry}><Plus size={14} /> Transférer</button>
+       </div>
+       <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
+-        La dernière équipe ajoutée sans date « Jusqu'à » est l'équipe actuelle du joueur. Renseigne
+-        « Jusqu'à » sur une équipe passée pour indiquer quand il l'a quittée — utile aussi si le
+-        joueur est actuellement sans équipe (mets « Jusqu'à » sur la dernière équipe et laisse-la
+-        sans nouvelle entrée).
++        Ajouter une équipe = transfert : l'équipe actuelle est clôturée à la même date et le joueur
++        quitte automatiquement le roster actif de son ancien club. « Rendre agent libre » clôture son
++        équipe sans lui en donner une nouvelle. Les tournois déjà joués ne changent pas.
+       </div>
+ 
+       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+@@ -472,9 +508,7 @@ function ProfileEditModal({ player, teamLogos, onSetLogo, onClose, onSave }) {
+           onClick={() => {
+             if (!name.trim()) return;
+             // if the user typed a team but never clicked "Ajouter", include it anyway
+-            const finalHistory = newTeam.trim()
+-              ? [...history, { id: uid(), team: newTeam.trim(), since: newSince.trim(), until: "" }]
+-              : history;
++            const finalHistory = newTeam.trim() ? withTransfer(history, newTeam.trim(), newSince.trim()) : history;
+             onSave({ ...player, name: name.trim(), nationality, teamHistory: finalHistory });
+           }}
+         >
+@@ -819,10 +853,10 @@ function Leaderboard({ players, onOpenPlayer, query, sortKey, sortDir, onSort, t
+                   {player.nationality && <span className="vt-flag-row"><CountryFlag code={player.nationality} style={{ width: 46, height: 32 }} /></span>}
+                   <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
+                     {rank === 1 && <span className="vt-ping" title="Meilleur sur cette colonne" />}
+-                    {logo && <img src={logo} className="vt-logo" alt="" />}
++                    {logo ? <img src={logo} className="vt-logo" alt="" /> : isFreeAgent(player) && <FreeAgentIcon />}
+                     <div>
+                       <div className="vt-display" style={{ fontWeight: 600, fontSize: 15 }}>{player.name}</div>
+-                      {currentTeam(player) && <div style={{ fontSize: 12, color: "var(--text-dim)" }}>{currentTeam(player)}</div>}
++                      {currentTeam(player) ? <div style={{ fontSize: 12, color: "var(--text-dim)" }}>{currentTeam(player)}</div> : isFreeAgent(player) && <div style={{ fontSize: 12, color: "var(--gold)", whiteSpace: "nowrap" }}>Agent libre</div>}
+                     </div>
+                   </div>
+                 </td>
+@@ -891,11 +925,11 @@ function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = []
+         {player.nationality && <span className="vt-flag-header"><CountryFlag code={player.nationality} style={{ width: 120, height: 80 }} /></span>}
+         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 12, position: "relative" }}>
+           <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+-            {logo && <img src={logo} className="vt-logo-lg" alt="" style={{ marginTop: 4 }} />}
++            {logo ? <img src={logo} className="vt-logo-lg" alt="" style={{ marginTop: 4 }} /> : isFreeAgent(player) && <span style={{ marginTop: 4 }}><FreeAgentIcon size={40} /></span>}
+             <div>
+               <h1 className="vt-display" style={{ fontSize: 32, fontWeight: 700, textTransform: "uppercase" }}>{player.name}</h1>
+               <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+-                {currentTeam(player) && <span style={{ color: "var(--steel)", fontSize: 14 }}>{currentTeam(player)}</span>}
++                {currentTeam(player) ? <span style={{ color: "var(--steel)", fontSize: 14 }}>{currentTeam(player)}</span> : isFreeAgent(player) && <FreeAgentBadge />}
+                 {player.nationality && <span style={{ fontSize: 13, color: "var(--text-dim)", display: "inline-flex", alignItems: "center", gap: 6 }}><CountryFlag code={player.nationality} /> {countryLabel(player.nationality)}</span>}
+               </div>
+               {clubStatuses.length > 0 && (
+@@ -1039,7 +1073,7 @@ function PlayerDetail({ player, players, tournaments, teamLogos, eloHistory = []
+ 
+ // ==================== tournaments ====================
+ 
+-function TeamModal({ team, players, organizations = [], organizationsEnabled = false, onClose, onSave, onCreatePlayer }) {
++function TeamModal({ team, players, organizations = [], organizationsEnabled = false, suggestRoster, isCurrentTournament = false, onClose, onSave, onCreatePlayer }) {
+   const isEdit = !!team;
+   const [name, setName] = useState(team?.name || "");
+   // "auto" = l'organisation qui porte ce nom (créée si elle n'existe pas encore)
+@@ -1049,7 +1083,7 @@ function TeamModal({ team, players, organizations = [], organizationsEnabled = f
+ 
+   const save = () => {
+     if (!name.trim()) return;
+-    const base = { id: team?.id || uid(), name: name.trim(), playerIds, eliminated: team?.eliminated || false };
++    const base = { id: team?.id || uid(), name: name.trim(), playerIds: selectedIds, eliminated: team?.eliminated || false };
+     if (!organizationsEnabled) { onSave({ ...base, organizationId: team?.organizationId || null }); return; }
+     if (orgChoice !== "auto") { onSave({ ...base, organizationId: orgChoice }); return; }
+     if (autoOrg) { onSave({ ...base, organizationId: autoOrg.id }); return; }
+@@ -1057,15 +1091,26 @@ function TeamModal({ team, players, organizations = [], organizationsEnabled = f
+     onSave({ ...base, organizationId: created.id }, created);
+   };
+   const [playerIds, setPlayerIds] = useState(team?.playerIds || []);
++  // Nouvelle équipe : tant que la sélection n'a pas été touchée, on reprend le roster actif de
++  // l'équipe existante (même organisation ou même nom).
++  const [touched, setTouched] = useState(Boolean(team));
++  const suggestion = !touched && suggestRoster && name.trim()
++    ? suggestRoster(name.trim(), orgChoice !== "auto" ? orgChoice : null)
++    : null;
++  const selectedIds = touched ? playerIds : (suggestion?.ids || []);
+   const [search, setSearch] = useState("");
+   const [newPlayerName, setNewPlayerName] = useState("");
+ 
+-  const toggle = (id) => setPlayerIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
++  const toggle = (id) => {
++    setPlayerIds(selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id]);
++    setTouched(true);
++  };
+ 
+   const createAndAdd = () => {
+     if (!newPlayerName.trim()) return;
+     const p = onCreatePlayer(newPlayerName.trim());
+-    setPlayerIds((ids) => [...ids, p.id]);
++    setPlayerIds([...selectedIds, p.id]);
++    setTouched(true);
+     setNewPlayerName("");
+   };
+ 
+@@ -1094,15 +1139,26 @@ function TeamModal({ team, players, organizations = [], organizationsEnabled = f
+         <button className="vt-btn vt-cut-sm" onClick={createAndAdd}><Plus size={14} /> Créer</button>
+       </div>
+ 
+-      <div className="vt-label" style={{ margin: "16px 0 8px" }}>Composition ({playerIds.length} joueur{playerIds.length > 1 ? "s" : ""})</div>
++      <div className="vt-label" style={{ margin: "16px 0 8px" }}>Composition ({selectedIds.length} joueur{selectedIds.length > 1 ? "s" : ""})</div>
++      {suggestion?.ids.length > 0 && (
++        <div style={{ fontSize: 12, color: "var(--steel)", marginBottom: 8 }}>
++          Roster actif de {suggestion.teamName} repris automatiquement — coche ou décoche pour l'ajuster.
++        </div>
++      )}
++      {isCurrentTournament && (
++        <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 8 }}>
++          Tournoi le plus récent : les joueurs cochés seront rattachés à cette équipe sur leur profil
++          (transfert automatique s'ils étaient ailleurs ou agents libres).
++        </div>
++      )}
+       <input className="vt-input" style={{ width: "100%", marginBottom: 8 }} placeholder="Rechercher un joueur…" value={search} onChange={(e) => setSearch(e.target.value)} />
+       <div className="vt-panel vt-cut-sm vt-scroll" style={{ maxHeight: 220, overflowY: "auto" }}>
+         {filtered.length === 0 && <div style={{ padding: 14, color: "var(--text-dim)", fontSize: 13 }}>Aucun joueur.</div>}
+         {filtered.map((p) => (
+           <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderBottom: "1px solid var(--line)", cursor: "pointer" }}>
+-            <input type="checkbox" checked={playerIds.includes(p.id)} onChange={() => toggle(p.id)} />
++            <input type="checkbox" checked={selectedIds.includes(p.id)} onChange={() => toggle(p.id)} />
+             <span className="vt-display" style={{ fontSize: 14 }}>{p.name}</span>
+-            {currentTeam(p) && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>({currentTeam(p)})</span>}
++            {currentTeam(p) ? <span style={{ fontSize: 12, color: "var(--text-dim)" }}>({currentTeam(p)})</span> : isFreeAgent(p) && <span style={{ fontSize: 12, color: "var(--gold)" }}>(agent libre)</span>}
+           </label>
+         ))}
+       </div>
+@@ -1954,7 +2010,7 @@ function ComparePlayersModal({ basePlayer, players, onClose }) {
+           <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: "1px solid var(--line)", cursor: "pointer" }}>
+             <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} />
+             <span className="vt-display" style={{ fontSize: 14 }}>{p.name}</span>
+-            {currentTeam(p) && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>({currentTeam(p)})</span>}
++            {currentTeam(p) ? <span style={{ fontSize: 12, color: "var(--text-dim)" }}>({currentTeam(p)})</span> : isFreeAgent(p) && <span style={{ fontSize: 12, color: "var(--gold)" }}>(agent libre)</span>}
+           </label>
+         ))}
+       </div>
+@@ -2060,7 +2116,7 @@ function RecordsView({ tournaments, players, filters, onFiltersChange }) {
+ }
+ 
+ function TeamsLeaderboard({ tournaments, players = [], organizations = [], teamLogos, hiddenTeams, onToggleHidden, onOpenTeam }) {
+-  const ranking = useMemo(() => computeTeamElo(tournaments, undefined, organizations), [tournaments, organizations]);
++  const ranking = useMemo(() => computeTeamElo(tournaments, undefined, organizations, players), [tournaments, organizations, players]);
+   const playerNames = useMemo(() => new Map(players.map((p) => [p.id, p.name])), [players]);
+   const hiddenSet = new Set(hiddenTeams);
+   const visible = ranking.filter((t) => !hiddenSet.has(t.name.trim().toLowerCase()));
+@@ -2250,7 +2306,7 @@ function RosterEditModal({ teamName, organization, players, currentIds, onClose,
+           <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: "1px solid var(--line)", cursor: "pointer" }}>
+             <input type="checkbox" checked={selected.includes(p.id)} onChange={() => toggle(p.id)} />
+             <span className="vt-display" style={{ fontSize: 14 }}>{p.name}</span>
+-            {currentTeam(p) && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>({currentTeam(p)})</span>}
++            {currentTeam(p) ? <span style={{ fontSize: 12, color: "var(--text-dim)" }}>({currentTeam(p)})</span> : isFreeAgent(p) && <span style={{ fontSize: 12, color: "var(--gold)" }}>(agent libre)</span>}
+           </label>
+         ))}
+       </div>
+@@ -2726,9 +2782,48 @@ export default function App() {
+     persist(() => upsertTournamentDb(t), `la sauvegarde du tournoi ${t.name}`);
+   };
+ 
++  // le tournoi le plus récent (ou sans date) reflète les effectifs actuels
++  const isCurrentTournament = (tournamentId) => {
++    const t = tournaments.find((x) => x.id === tournamentId);
++    if (!t) return false;
++    if (!t.date) return true;
++    return tournaments.every((x) => !x.date || x.date <= t.date);
++  };
++
++  // Roster actif d'une équipe existante, pour pré-remplir une inscription à un tournoi
++  const teamRanking = useMemo(() => computeTeamElo(tournaments, undefined, organizations, players), [tournaments, organizations, players]);
++  const suggestRoster = (name, organizationId) => {
++    const wanted = normalizedTeamName(name);
++    const entry = organizationId
++      ? teamRanking.find((r) => r.key === organizationId)
++      : teamRanking.find((r) => orgNames(r.key, tournaments, r.organization).has(wanted));
++    if (entry) return { teamName: entry.name, ids: [...entry.roster.map((r) => r.id), ...entry.substitutes] };
++    // équipe jamais inscrite : les joueurs dont le profil indique ce club
++    const ids = players.filter((p) => normalizedTeamName(currentTeam(p)) === wanted).map((p) => p.id);
++    return { teamName: name, ids };
++  };
++
+   const saveTeam = (tournamentId, team, newOrganization = null) => {
+     // l'organisation doit exister avant l'équipe qui la référence (les écritures sont en file)
+     if (newOrganization) saveOrganization(newOrganization);
++
++    // Tournoi actuel : chaque joueur inscrit est rattaché à cette équipe sur son profil.
++    // Un joueur ne pouvant être que dans un club, son ancien club le perd automatiquement.
++    if (isCurrentTournament(tournamentId)) {
++      const tournament = tournaments.find((t) => t.id === tournamentId);
++      const date = tournament?.date || new Date().toISOString().slice(0, 10);
++      const names = orgNames(orgKeyOf(team), [...tournaments, { teams: [team] }], newOrganization || organizations.find((o) => o.id === team.organizationId));
++      const nextPlayers = players.map((p) => {
++        if (!team.playerIds.includes(p.id)) return p;
++        if (names.has(normalizedTeamName(currentTeam(p)))) return p;
++        return transferPlayer(p, team.name, date);
++      });
++      const moved = changedPlayers(players, nextPlayers);
++      if (moved.length) {
++        setPlayers(nextPlayers);
++        persist(() => upsertPlayersDb(moved), "le transfert des joueurs");
++      }
++    }
+     setTournaments((prev) => prev.map((t) => {
+       if (t.id !== tournamentId) return t;
+       const idx = t.teams.findIndex((x) => x.id === team.id);
+@@ -3090,6 +3185,8 @@ export default function App() {
+           players={players}
+           organizations={organizations}
+           organizationsEnabled={organizationsEnabled}
++          suggestRoster={suggestRoster}
++          isCurrentTournament={isCurrentTournament(activeTournament.id)}
+           onCreatePlayer={quickCreatePlayer}
+           onClose={() => { setModal(null); setEditingTeam(null); }}
+           onSave={(team, newOrganization) => saveTeam(activeTournament.id, team, newOrganization)}
+diff --git a/src/domain/elo.js b/src/domain/elo.js
+index 6fffa7e..d4099ff 100644
+--- a/src/domain/elo.js
++++ b/src/domain/elo.js
+@@ -1,4 +1,4 @@
+-import { num } from "./stats.js";
++import { num, currentTeam, isFreeAgent } from "./stats.js";
+ import { computeParticipation, playedMaps } from "./participation.js";
+ 
+ // Elo individuel des joueurs
+@@ -206,7 +206,27 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
+ // Les 5 joueurs principaux d'une organisation : son dernier tournoi, classés par maps jouées
+ // dans ce tournoi (un remplaçant passe donc après les titulaires). Si un roster a été corrigé à
+ // la main (rosterOverride), c'est lui qui fait foi.
+-export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterOverride = null) {
++// Équipe actuelle déclarée sur le profil d'un joueur : c'est elle qui fait foi pour le roster
++// actif (un joueur transféré quitte son ancien club, un agent libre n'est dans aucun roster).
++// "unknown" = profil sans historique d'équipe : on se fie alors aux tournois, comme avant.
++export function declaredClub(player) {
++  if (!player || !(player.teamHistory || []).length) return { status: "unknown" };
++  if (isFreeAgent(player)) return { status: "free" };
++  return { status: "team", name: String(currentTeam(player) || "").trim().toLowerCase() };
++}
++
++// Noms (en minuscules) sous lesquels une organisation a été inscrite, + son nom officiel
++export function orgNames(key, tournaments, organization = null) {
++  const names = new Set();
++  (tournaments || []).forEach((t) => t.teams.forEach((team) => {
++    if (orgKeyOf(team) === key) names.add(String(team.name || "").trim().toLowerCase());
++  }));
++  if (organization?.name) names.add(organization.name.trim().toLowerCase());
++  if (key.startsWith("name:")) names.add(key.slice(5));
++  return names;
++}
++
++export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterOverride = null, players = null, organization = null) {
+   const ordered = chronologicalTournaments(tournaments);
+   let last = null;
+   for (let i = ordered.length - 1; i >= 0 && !last; i--) {
+@@ -225,7 +245,21 @@ export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterO
+       });
+     });
+   }
+-  const candidates = rosterOverride?.length ? rosterOverride : (last?.team.playerIds || []);
++  let candidates = rosterOverride?.length ? rosterOverride : (last?.team.playerIds || []);
++  if (players) {
++    // un seul club à la fois : on retire les joueurs partis ailleurs ou agents libres, et on
++    // ajoute ceux dont le profil indique qu'ils ont rejoint ce club (recrue sans match joué)
++    const names = orgNames(key, tournaments, organization);
++    const byId = new Map(players.map((p) => [p.id, p]));
++    candidates = candidates.filter((id) => {
++      const club = declaredClub(byId.get(id));
++      return club.status === "unknown" || (club.status === "team" && names.has(club.name));
++    });
++    players.forEach((p) => {
++      const club = declaredClub(p);
++      if (club.status === "team" && names.has(club.name) && !candidates.includes(p.id)) candidates = [...candidates, p.id];
++    });
++  }
+   if (!candidates.length) return null;
+   const sorted = [...candidates].sort((a, b) => (mapsPlayed.get(b) || 0) - (mapsPlayed.get(a) || 0));
+   return {
+@@ -235,8 +269,8 @@ export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterO
+ }
+ 
+ // Classement des équipes : Elo actuel = moyenne des Elo des 5 joueurs principaux.
+-export function computeTeamElo(tournaments, config = ELO_CONFIG, organizations = []) {
+-  const { players, teams } = computeEloState(tournaments, config);
++export function computeTeamElo(tournaments, config = ELO_CONFIG, organizations = [], players = null) {
++  const { players: eloByPlayer, teams } = computeEloState(tournaments, config);
+   const orgs = new Map((organizations || []).map((o) => [o.id, o]));
+   const names = new Map();
+   chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => names.set(orgKeyOf(team), team.name)));
+@@ -244,9 +278,9 @@ export function computeTeamElo(tournaments, config = ELO_CONFIG, organizations =
+   const ranking = [];
+   names.forEach((lastName, key) => {
+     const org = orgs.get(key);
+-    const roster = currentMainRoster(key, tournaments, config, org?.rosterOverride);
++    const roster = currentMainRoster(key, tournaments, config, org?.rosterOverride, players, org);
+     const main = roster?.main || [];
+-    const playerElos = main.map((id) => ({ id, elo: players.get(id)?.elo ?? config.start }));
++    const playerElos = main.map((id) => ({ id, elo: eloByPlayer.get(id)?.elo ?? config.start }));
+     // une équipe qui n'a encore rien joué est quand même classée avec l'Elo de ses joueurs
+     const history = teams.get(key)?.history || [];
+     const elo = playerElos.length ? playerElos.reduce((sum, p) => sum + p.elo, 0) / playerElos.length : config.start;
+diff --git a/src/domain/stats.js b/src/domain/stats.js
+index 44da5f3..e0b9f95 100644
+--- a/src/domain/stats.js
++++ b/src/domain/stats.js
+@@ -245,6 +245,22 @@ export function currentTeam(player) {
+   return last.until ? "" : last.team;
+ }
+ 
++// Agent libre : le joueur a déjà eu une équipe, mais sa dernière est terminée (date "jusqu'à").
++// Un joueur sans aucun historique n'est PAS agent libre : on ne sait simplement rien de lui.
++export function isFreeAgent(player) {
++  const h = player?.teamHistory || [];
++  return h.length > 0 && Boolean(h[h.length - 1].until);
++}
++
++// Transfert : clôt l'équipe en cours (ou les équipes ouvertes) et ajoute la nouvelle.
++// newTeam vide = le joueur devient agent libre.
++export function transferPlayer(player, newTeam, date = new Date().toISOString().slice(0, 10)) {
++  const history = (player.teamHistory || []).map((e) => (e.until ? e : { ...e, until: date }));
++  const team = String(newTeam || "").trim();
++  if (team) history.push({ id: uid(), team, since: date, until: "" });
++  return { ...player, teamHistory: history };
++}
++
+ // label for a team-history row: "depuis X" only for the still-current spell; a closed spell
+ // shows its actual span (explicit "until", or inferred from when the next team started)
+ export function teamPeriodLabel(entry, isCurrent, impliedUntil) {
+diff --git a/src/domain/stats.test.js b/src/domain/stats.test.js
+index 42ea37b..dd7ba42 100644
+--- a/src/domain/stats.test.js
++++ b/src/domain/stats.test.js
+@@ -1,7 +1,7 @@
+ import { describe, it, expect } from "vitest";
+ import {
+   num, normPct, computeDerived, computeMatchDerived, applyMatchToStats, removeMatchFromStats,
+-  emptyStats, fmtStat, STAT_FIELDS, statCompareAsc, mapRow, currentTeam, resetAverageCounts,
++  emptyStats, fmtStat, STAT_FIELDS, statCompareAsc, mapRow, currentTeam, resetAverageCounts, transferPlayer, isFreeAgent,
+ } from "./stats.js";
+ 
+ const field = (key) => STAT_FIELDS.find((f) => f.key === key);
+@@ -132,3 +132,22 @@ describe("affichage et tri", () => {
+     expect(currentTeam({ teamHistory: [{ team: "A", until: "2025" }] })).toBe("");
+   });
+ });
++
++describe("transferPlayer / isFreeAgent", () => {
++  it("clôt l'équipe en cours et ajoute la nouvelle", () => {
++    const p = { teamHistory: [{ id: "1", team: "Anatolia", since: "2025-01-01", until: "" }] };
++    const moved = transferPlayer(p, "Fire Flux", "2026-02-01");
++    expect(moved.teamHistory.map((e) => [e.team, e.until])).toEqual([["Anatolia", "2026-02-01"], ["Fire Flux", ""]]);
++    expect(currentTeam(moved)).toBe("Fire Flux");
++    expect(isFreeAgent(moved)).toBe(false);
++  });
++  it("sans nouvelle équipe, le joueur devient agent libre", () => {
++    const p = { teamHistory: [{ id: "1", team: "Anatolia", since: "2025-01-01", until: "" }] };
++    const free = transferPlayer(p, "", "2026-02-01");
++    expect(isFreeAgent(free)).toBe(true);
++    expect(currentTeam(free)).toBe("");
++  });
++  it("un joueur sans historique n'est pas agent libre", () => {
++    expect(isFreeAgent({ teamHistory: [] })).toBe(false);
++  });
++});
+diff --git a/src/domain/teamPage.js b/src/domain/teamPage.js
+index 973e014..3b848a2 100644
+--- a/src/domain/teamPage.js
++++ b/src/domain/teamPage.js
+@@ -15,7 +15,7 @@ const hasAnyValue = (row) => Object.values(row || {}).some((v) => v !== "" && v
+ // Les stats par équipe utilisent tous les matchs enregistrés (appliqués au classement ou non),
+ // comme les records et les MVP/MJ.
+ export function buildTeamPage(key, tournaments, players, { organizations = [], playerElo = new Map(), config = ELO_CONFIG } = {}) {
+-  const ranking = computeTeamElo(tournaments, config, organizations);
++  const ranking = computeTeamElo(tournaments, config, organizations, players);
+   const rankIndex = ranking.findIndex((r) => r.key === key);
+   if (rankIndex === -1) return null;
+   const entry = ranking[rankIndex];
+diff --git a/src/domain/teamPage.test.js b/src/domain/teamPage.test.js
+index 994cbdc..ba8a19d 100644
+--- a/src/domain/teamPage.test.js
++++ b/src/domain/teamPage.test.js
+@@ -72,3 +72,42 @@ describe("page équipe", () => {
+     expect(drx.roster.map((r) => r.id).sort()).toEqual(["b", "c", "d", "e", "f"]);
+   });
+ });
++
++describe("transferts et agents libres", () => {
++  const t = {
++    id: "s", name: "Split", type: "Split", date: "2026-01-01",
++    teams: [
++      { id: "ana", name: "Anatolia", playerIds: ["soc", "a2", "a3", "a4", "a5"] },
++      { id: "ff", name: "Fire Flux", playerIds: ["f1", "f2", "f3", "f4", "f5"] },
++    ],
++    matches: [],
++  };
++  const base = ["soc", "a2", "a3", "a4", "a5", "f1", "f2", "f3", "f4", "f5"].map((id) => ({ id, name: id, teamHistory: [] }));
++  const history = (...entries) => entries.map((e, i) => ({ id: "h" + i, since: "", until: "", ...e }));
++
++  it("un joueur transféré quitte le roster actif de son ancien club et rejoint le nouveau", () => {
++    const players = base.map((p) => (p.id === "soc"
++      ? { ...p, teamHistory: history({ team: "Anatolia", until: "2026-02-01" }, { team: "Fire Flux", since: "2026-02-01" }) }
++      : p));
++    const ranking = computeTeamElo([t], undefined, [], players);
++    const ana = ranking.find((r) => r.name === "Anatolia");
++    const ff = ranking.find((r) => r.name === "Fire Flux");
++    expect([...ana.roster.map((r) => r.id), ...ana.substitutes]).not.toContain("soc");
++    expect([...ff.roster.map((r) => r.id), ...ff.substitutes]).toContain("soc");
++    // il reste dans les anciens joueurs d'Anatolia, avec son passage
++    const page = buildTeamPage(orgKeyOf({ name: "Anatolia" }), [t], players);
++    expect(page.former.map((r) => r.id)).toContain("soc");
++  });
++
++  it("un agent libre n'est dans aucun roster actif", () => {
++    const players = base.map((p) => (p.id === "soc" ? { ...p, teamHistory: history({ team: "Anatolia", until: "2026-02-01" }) } : p));
++    const ranking = computeTeamElo([t], undefined, [], players);
++    const all = ranking.flatMap((r) => [...r.roster.map((x) => x.id), ...r.substitutes]);
++    expect(all).not.toContain("soc");
++  });
++
++  it("sans historique d'équipe sur le profil, on se fie aux tournois (comme avant)", () => {
++    const ranking = computeTeamElo([t], undefined, [], base);
++    expect(ranking.find((r) => r.name === "Anatolia").roster.map((r) => r.id)).toContain("soc");
++  });
++});

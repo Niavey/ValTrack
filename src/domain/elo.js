@@ -1,4 +1,4 @@
-import { num } from "./stats.js";
+import { num, currentTeam, isFreeAgent } from "./stats.js";
 import { computeParticipation, playedMaps } from "./participation.js";
 
 // Elo individuel des joueurs
@@ -206,7 +206,27 @@ export function computeEloState(tournaments, config = ELO_CONFIG) {
 // Les 5 joueurs principaux d'une organisation : son dernier tournoi, classés par maps jouées
 // dans ce tournoi (un remplaçant passe donc après les titulaires). Si un roster a été corrigé à
 // la main (rosterOverride), c'est lui qui fait foi.
-export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterOverride = null) {
+// Équipe actuelle déclarée sur le profil d'un joueur : c'est elle qui fait foi pour le roster
+// actif (un joueur transféré quitte son ancien club, un agent libre n'est dans aucun roster).
+// "unknown" = profil sans historique d'équipe : on se fie alors aux tournois, comme avant.
+export function declaredClub(player) {
+  if (!player || !(player.teamHistory || []).length) return { status: "unknown" };
+  if (isFreeAgent(player)) return { status: "free" };
+  return { status: "team", name: String(currentTeam(player) || "").trim().toLowerCase() };
+}
+
+// Noms (en minuscules) sous lesquels une organisation a été inscrite, + son nom officiel
+export function orgNames(key, tournaments, organization = null) {
+  const names = new Set();
+  (tournaments || []).forEach((t) => t.teams.forEach((team) => {
+    if (orgKeyOf(team) === key) names.add(String(team.name || "").trim().toLowerCase());
+  }));
+  if (organization?.name) names.add(organization.name.trim().toLowerCase());
+  if (key.startsWith("name:")) names.add(key.slice(5));
+  return names;
+}
+
+export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterOverride = null, players = null, organization = null) {
   const ordered = chronologicalTournaments(tournaments);
   let last = null;
   for (let i = ordered.length - 1; i >= 0 && !last; i--) {
@@ -225,7 +245,21 @@ export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterO
       });
     });
   }
-  const candidates = rosterOverride?.length ? rosterOverride : (last?.team.playerIds || []);
+  let candidates = rosterOverride?.length ? rosterOverride : (last?.team.playerIds || []);
+  if (players) {
+    // un seul club à la fois : on retire les joueurs partis ailleurs ou agents libres, et on
+    // ajoute ceux dont le profil indique qu'ils ont rejoint ce club (recrue sans match joué)
+    const names = orgNames(key, tournaments, organization);
+    const byId = new Map(players.map((p) => [p.id, p]));
+    candidates = candidates.filter((id) => {
+      const club = declaredClub(byId.get(id));
+      return club.status === "unknown" || (club.status === "team" && names.has(club.name));
+    });
+    players.forEach((p) => {
+      const club = declaredClub(p);
+      if (club.status === "team" && names.has(club.name) && !candidates.includes(p.id)) candidates = [...candidates, p.id];
+    });
+  }
   if (!candidates.length) return null;
   const sorted = [...candidates].sort((a, b) => (mapsPlayed.get(b) || 0) - (mapsPlayed.get(a) || 0));
   return {
@@ -235,8 +269,8 @@ export function currentMainRoster(key, tournaments, config = ELO_CONFIG, rosterO
 }
 
 // Classement des équipes : Elo actuel = moyenne des Elo des 5 joueurs principaux.
-export function computeTeamElo(tournaments, config = ELO_CONFIG, organizations = []) {
-  const { players, teams } = computeEloState(tournaments, config);
+export function computeTeamElo(tournaments, config = ELO_CONFIG, organizations = [], players = null) {
+  const { players: eloByPlayer, teams } = computeEloState(tournaments, config);
   const orgs = new Map((organizations || []).map((o) => [o.id, o]));
   const names = new Map();
   chronologicalTournaments(tournaments).forEach((t) => t.teams.forEach((team) => names.set(orgKeyOf(team), team.name)));
@@ -244,9 +278,9 @@ export function computeTeamElo(tournaments, config = ELO_CONFIG, organizations =
   const ranking = [];
   names.forEach((lastName, key) => {
     const org = orgs.get(key);
-    const roster = currentMainRoster(key, tournaments, config, org?.rosterOverride);
+    const roster = currentMainRoster(key, tournaments, config, org?.rosterOverride, players, org);
     const main = roster?.main || [];
-    const playerElos = main.map((id) => ({ id, elo: players.get(id)?.elo ?? config.start }));
+    const playerElos = main.map((id) => ({ id, elo: eloByPlayer.get(id)?.elo ?? config.start }));
     // une équipe qui n'a encore rien joué est quand même classée avec l'Elo de ses joueurs
     const history = teams.get(key)?.history || [];
     const elo = playerElos.length ? playerElos.reduce((sum, p) => sum + p.elo, 0) / playerElos.length : config.start;

@@ -15,7 +15,7 @@ const hasAnyValue = (row) => Object.values(row || {}).some((v) => v !== "" && v 
 // Les stats par équipe utilisent tous les matchs enregistrés (appliqués au classement ou non),
 // comme les records et les MVP/MJ.
 export function buildTeamPage(key, tournaments, players, { organizations = [], playerElo = new Map(), config = ELO_CONFIG } = {}) {
-  const ranking = computeTeamElo(tournaments, config, organizations);
+  const ranking = computeTeamElo(tournaments, config, organizations, players);
   const rankIndex = ranking.findIndex((r) => r.key === key);
   if (rankIndex === -1) return null;
   const entry = ranking[rankIndex];

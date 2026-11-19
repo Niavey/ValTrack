@@ -245,6 +245,22 @@ export function currentTeam(player) {
   return last.until ? "" : last.team;
 }
 
+// Agent libre : le joueur a déjà eu une équipe, mais sa dernière est terminée (date "jusqu'à").
+// Un joueur sans aucun historique n'est PAS agent libre : on ne sait simplement rien de lui.
+export function isFreeAgent(player) {
+  const h = player?.teamHistory || [];
+  return h.length > 0 && Boolean(h[h.length - 1].until);
+}
+
+// Transfert : clôt l'équipe en cours (ou les équipes ouvertes) et ajoute la nouvelle.
+// newTeam vide = le joueur devient agent libre.
+export function transferPlayer(player, newTeam, date = new Date().toISOString().slice(0, 10)) {
+  const history = (player.teamHistory || []).map((e) => (e.until ? e : { ...e, until: date }));
+  const team = String(newTeam || "").trim();
+  if (team) history.push({ id: uid(), team, since: date, until: "" });
+  return { ...player, teamHistory: history };
+}
+
 // label for a team-history row: "depuis X" only for the still-current spell; a closed spell
 // shows its actual span (explicit "until", or inferred from when the next team started)
 export function teamPeriodLabel(entry, isCurrent, impliedUntil) {

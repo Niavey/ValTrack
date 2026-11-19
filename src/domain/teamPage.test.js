@@ -72,3 +72,42 @@ describe("page équipe", () => {
     expect(drx.roster.map((r) => r.id).sort()).toEqual(["b", "c", "d", "e", "f"]);
   });
 });
+
+describe("transferts et agents libres", () => {
+  const t = {
+    id: "s", name: "Split", type: "Split", date: "2026-01-01",
+    teams: [
+      { id: "ana", name: "Anatolia", playerIds: ["soc", "a2", "a3", "a4", "a5"] },
+      { id: "ff", name: "Fire Flux", playerIds: ["f1", "f2", "f3", "f4", "f5"] },
+    ],
+    matches: [],
+  };
+  const base = ["soc", "a2", "a3", "a4", "a5", "f1", "f2", "f3", "f4", "f5"].map((id) => ({ id, name: id, teamHistory: [] }));
+  const history = (...entries) => entries.map((e, i) => ({ id: "h" + i, since: "", until: "", ...e }));
+
+  it("un joueur transféré quitte le roster actif de son ancien club et rejoint le nouveau", () => {
+    const players = base.map((p) => (p.id === "soc"
+      ? { ...p, teamHistory: history({ team: "Anatolia", until: "2026-02-01" }, { team: "Fire Flux", since: "2026-02-01" }) }
+      : p));
+    const ranking = computeTeamElo([t], undefined, [], players);
+    const ana = ranking.find((r) => r.name === "Anatolia");
+    const ff = ranking.find((r) => r.name === "Fire Flux");
+    expect([...ana.roster.map((r) => r.id), ...ana.substitutes]).not.toContain("soc");
+    expect([...ff.roster.map((r) => r.id), ...ff.substitutes]).toContain("soc");
+    // il reste dans les anciens joueurs d'Anatolia, avec son passage
+    const page = buildTeamPage(orgKeyOf({ name: "Anatolia" }), [t], players);
+    expect(page.former.map((r) => r.id)).toContain("soc");
+  });
+
+  it("un agent libre n'est dans aucun roster actif", () => {
+    const players = base.map((p) => (p.id === "soc" ? { ...p, teamHistory: history({ team: "Anatolia", until: "2026-02-01" }) } : p));
+    const ranking = computeTeamElo([t], undefined, [], players);
+    const all = ranking.flatMap((r) => [...r.roster.map((x) => x.id), ...r.substitutes]);
+    expect(all).not.toContain("soc");
+  });
+
+  it("sans historique d'équipe sur le profil, on se fie aux tournois (comme avant)", () => {
+    const ranking = computeTeamElo([t], undefined, [], base);
+    expect(ranking.find((r) => r.name === "Anatolia").roster.map((r) => r.id)).toContain("soc");
+  });
+});
