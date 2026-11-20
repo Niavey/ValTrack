@@ -40,6 +40,20 @@ describe("Meilleurs 5", () => {
     expect(slots.find((s) => s.slot === "duelist").member.id).toBe("due1");
   });
 
+  it("un Flex qui joue surtout un rôle vide prend ce poste, le Flex revient au meilleur restant", () => {
+    // cas PRX : Tommy Flex (50 % Initiateur), aucun initiateur ; Forsaken duelliste derrière d4v41
+    const prx = [member("mindfreak", 0.99), member("d4v41", 1.21), member("forsaken", 1.2), member("benkai", 1.05), member("tommy", 0.89)];
+    const prxPlays = [
+      ...plays("mindfreak", "Omen", 10), ...plays("d4v41", "Jett", 10), ...plays("forsaken", "Raze", 10),
+      ...plays("benkai", "Killjoy", 10),
+      ...plays("tommy", "Sova", 6), ...plays("tommy", "Killjoy", 3), ...plays("tommy", "Reyna", 3),
+    ];
+    const { slots } = computeBestFive("org", prx, prxPlays);
+    expect(Object.fromEntries(slots.map((s) => [s.slot, s.member?.id]))).toEqual({
+      controller: "mindfreak", duelist: "d4v41", initiator: "tommy", sentinel: "benkai", flex: "forsaken",
+    });
+  });
+
   it("poste vide plutôt qu'un faux rôle", () => {
     const { slots } = computeBestFive("org", [member("due1", 1.3), member("due2", 1.2)], all);
     expect(slots.find((s) => s.slot === "controller").member).toBe(null);

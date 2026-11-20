@@ -1,4 +1,4 @@
-import { computeRole } from "./agents.js";
+import { computeRole, ROLE_CONFIG } from "./agents.js";
 
 // "Meilleurs 5" d'une équipe, toutes périodes confondues : un Smoker, un Duelliste, un
 // Initiateur, une Sentinelle et un Flex, choisis selon le Rating AVEC cette équipe.
@@ -21,7 +21,16 @@ export function computeBestFive(teamKey, members, plays, config = BEST_FIVE_CONF
     })
     .sort((a, b) => b.rating - a.rating);
 
-  const byRole = (role) => eligible.filter((m) => m.role === role).slice(0, config.candidatesPerRole);
+  // Candidats d'un poste : les spécialistes du rôle. S'il n'y en a AUCUN d'éligible, les Flex
+  // qui jouent ce rôle au moins 25 % du temps peuvent le prendre (ex. un Flex à 50 % Initiateur
+  // comble un poste Initiateur vide ; le poste Flex revient alors au meilleur joueur restant).
+  const byRole = (role) => {
+    const specialists = eligible.filter((m) => m.role === role);
+    const pool = specialists.length
+      ? specialists
+      : eligible.filter((m) => m.role === "flex" && (m.roleShares?.[role] || 0) >= ROLE_CONFIG.flexShare);
+    return pool.slice(0, config.candidatesPerRole);
+  };
   const pools = ["controller", "duelist", "initiator", "sentinel"].map((r) => [null, ...byRole(r)]);
 
   // essai de toutes les combinaisons (petit volume) : on maximise d'abord le nombre de postes
