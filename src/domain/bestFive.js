@@ -47,10 +47,15 @@ export function computeBestFive(teamKey, members, plays, config = BEST_FIVE_CONF
       const total = lineup.reduce((s, m) => s + (m ? m.rating : 0), 0);
       // à égalité, on préfère chaque joueur à SON poste (un duelliste au poste Duelliste)
       const matched = lineup.filter((m, i) => m && m.role === BEST_FIVE_SLOTS[i]).length;
+      // adéquation joueur/poste : part du rôle du poste dans ses agents (le poste Flex n'en a pas)
+      const fit = lineup.reduce((sum, m, i) => sum + (m && i < 4 ? (m.roleShares?.[BEST_FIVE_SLOTS[i]] || 0) : 0), 0);
+      const same = (x, y) => Math.abs(x - y) <= 1e-9;
+      // à Ratings égaux (ex. deux Flex qu'on peut permuter), chacun va au poste qu'il joue le plus
       const better = !best || filled > best.filled
         || (filled === best.filled && total > best.total + 1e-9)
-        || (filled === best.filled && Math.abs(total - best.total) <= 1e-9 && matched > best.matched);
-      if (better) best = { lineup, filled, total, matched };
+        || (filled === best.filled && same(total, best.total) && fit > best.fit + 1e-9)
+        || (filled === best.filled && same(total, best.total) && same(fit, best.fit) && matched > best.matched);
+      if (better) best = { lineup, filled, total, matched, fit };
       return;
     }
     const used = new Set(chosen.filter(Boolean).map((m) => m.id));
