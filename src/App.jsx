@@ -1465,6 +1465,8 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
   const [openLineup, setOpenLineup] = useState(null);
   // veto : bans des deux équipes (rangés sur la 1re map à l'enregistrement) + pick de chaque map
   const [bans, setBans] = useState(() => existingMatch?.mapScores?.[0]?.veto?.bans || []);
+  // decider connue mais pas jouée (ex. 2-0 en BO3)
+  const [unplayedDecider, setUnplayedDecider] = useState(() => existingMatch?.mapScores?.[0]?.veto?.decider || "");
   const setBan = (idx, field, value) => setBans((list) => list.map((b, i) => (i === idx ? { ...b, [field]: value } : b)));
   const [rows, setRows] = useState(() => {
     if (!existingMatch) return {};
@@ -1701,6 +1703,16 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
           Avec le pick de chaque map, ça alimente les % de pick et de ban de l'onglet Maps.
         </span>
       </div>
+      {mapScores.some((m) => isPlayedMap(m) && m.pick === "decider") ? null : (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, color: "var(--text-dim)" }}>Decider non jouée</span>
+          <MapNameInput value={unplayedDecider} onChange={setUnplayedDecider} />
+          {unplayedDecider && <button className="vt-btn vt-cut-sm" style={{ padding: "4px 8px" }} onClick={() => setUnplayedDecider("")}><X size={12} /></button>}
+          <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+            Si le match s'est fini avant la decider (ex. 2-0 en BO3) : elle compte dans le % de decider, pas comme map jouée.
+          </span>
+        </div>
+      )}
 
       {teamA && teamB && roster.length === 0 && (
         <div className="vt-panel vt-cut-sm" style={{ padding: 14, marginTop: 16, color: "var(--red)", fontSize: 13 }}>
@@ -1828,7 +1840,10 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
             }).map((m, i) => {
               const { veto: _v, ...rest } = m;
               const cleanBans = bans.filter((b) => b.map).map((b) => ({ side: b.side === "B" ? "B" : "A", map: b.map }));
-              return i === 0 && cleanBans.length ? { ...rest, veto: { bans: cleanBans } } : rest;
+              // la decider non jouée n'a de sens que si aucune map jouée n'est marquée decider
+              const decider = unplayedDecider && !mapScores.some((mm) => isPlayedMap(mm) && mm.pick === "decider") ? unplayedDecider : "";
+              if (i !== 0 || (!cleanBans.length && !decider)) return rest;
+              return { ...rest, veto: { bans: cleanBans, ...(decider ? { decider } : {}) } };
             });
             onSave(
               {
