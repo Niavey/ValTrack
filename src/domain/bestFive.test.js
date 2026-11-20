@@ -54,6 +54,21 @@ describe("Meilleurs 5", () => {
     });
   });
 
+  it("deux Flex permutables : chacun va au poste qu'il joue le plus", () => {
+    // cas Team Liquid : Kryptix surtout Killjoy, L1NK surtout Omen, aucun spécialiste smoker/sentinelle
+    const liquid = [member("kryptix", 1.08), member("scream", 1.32), member("soulcas", 1.0), member("l1nk", 1.04), member("jamppi", 1.03)];
+    const liquidPlays = [
+      // les deux jouent smoker ET sentinelle (≥ 25 %) : ils sont candidats aux deux postes
+      ...plays("kryptix", "Breach", 2), ...plays("kryptix", "Viper", 4), ...plays("kryptix", "Killjoy", 5),
+      ...plays("l1nk", "Breach", 2), ...plays("l1nk", "Killjoy", 4), ...plays("l1nk", "Omen", 5),
+      ...plays("scream", "Phoenix", 10), ...plays("soulcas", "Skye", 10), ...plays("jamppi", "Jett", 10),
+    ];
+    const { slots } = computeBestFive("org", liquid, liquidPlays);
+    expect(Object.fromEntries(slots.map((s) => [s.slot, s.member?.id]))).toEqual({
+      controller: "l1nk", duelist: "scream", initiator: "soulcas", sentinel: "kryptix", flex: "jamppi",
+    });
+  });
+
   it("poste vide plutôt qu'un faux rôle", () => {
     const { slots } = computeBestFive("org", [member("due1", 1.3), member("due2", 1.2)], all);
     expect(slots.find((s) => s.slot === "controller").member).toBe(null);
