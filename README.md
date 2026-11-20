@@ -34,6 +34,8 @@ src/
     filters.js        filtres du classement et des records
 supabase/
   securite-rls.sql    règles d'accès : lecture publique, écriture réservée aux connectés
+  etape-c-organisations.sql  organisations (correction manuelle du roster)
+  etape-e-reglages.sql       agents et maps ajoutés depuis l'appli
 ```
 
 ## Sécurité
