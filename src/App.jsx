@@ -297,10 +297,10 @@ function SortHeader({ field, sortKey, sortDir, onClick, align = "right" }) {
   );
 }
 
-function ModalShell({ title, onClose, children, wide }) {
+function ModalShell({ title, onClose, children, wide, maxWidth }) {
   return (
     <div className="vt-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="vt-panel vt-cut vt-scroll" style={{ width: "100%", maxWidth: wide ? 680 : 460, maxHeight: "88vh", overflowY: "auto" }}>
+      <div className="vt-panel vt-cut vt-scroll" style={{ width: "100%", maxWidth: maxWidth || (wide ? 680 : 460), maxHeight: "88vh", overflowY: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px", borderBottom: "1px solid var(--line)" }}>
           <h2 className="vt-display" style={{ fontSize: 20, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em" }}>{title}</h2>
           <button className="vt-btn vt-cut-sm" style={{ padding: 6 }} onClick={onClose}><X size={16} /></button>
@@ -1541,7 +1541,7 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
   const labels = STAT_LABELS;
 
   return (
-    <ModalShell title={`${isEdit ? "Modifier le match" : "Ajouter un match"} — ${tournament.name}`} onClose={onClose} wide>
+    <ModalShell title={`${isEdit ? "Modifier le match" : "Ajouter un match"} — ${tournament.name}`} onClose={onClose} wide maxWidth={900}>
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
         <Field label="Étiquette *">
           <input className="vt-input" style={{ width: "100%" }} placeholder='ex : "Poule A - J1", "Demi-finale"' value={label} onChange={(e) => setLabel(e.target.value)} />
@@ -1637,18 +1637,18 @@ function AddTournamentMatchModal({ tournament, players, existingMatch, usualAgen
                 {i > 0 && <button type="button" className="vt-btn vt-cut-sm" style={{ padding: "3px 7px", fontSize: 10 }} onClick={() => copyPreviousAgents(i)}>Copier la map {i}</button>}
                 <button type="button" className="vt-btn vt-cut-sm" style={{ padding: "3px 7px", fontSize: 10 }} onClick={() => fillMapAgents(i, (id) => usualAgents.get(id) || "")} title="Remplit les cases vides avec l'agent le plus joué de chaque joueur">Agents habituels</button>
               </div>
-              <div className="vt-input-flow" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 16px" }}>
+              <div className="vt-input-flow" style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "4px 16px" }}>
                 {[["A", resolved.lineupA], ["B", resolved.lineupB]].map(([side, ids]) => (
-                  <div key={side} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div key={side} style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
                     {ids.map((id) => {
                       const value = m.agents?.[id] || "";
                       const role = agentRole(value);
                       return (
-                        <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-                          <span style={{ width: 90, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nameOf(id)}</span>
+                        <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, minWidth: 0 }}>
+                          <span title={nameOf(id)} style={{ width: 84, flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nameOf(id)}</span>
                           <input
                             className="vt-input" list="vt-agent-list" placeholder={usualAgents.get(id) || "Agent"}
-                            style={{ flex: 1, minWidth: 0, padding: "4px 8px", fontSize: 12 }}
+                            style={{ flex: "1 1 0", width: 0, minWidth: 0, padding: "4px 8px", fontSize: 12 }}
                             value={value}
                             onChange={(e) => setMapAgent(i, id, e.target.value)}
                             onBlur={(e) => setMapAgent(i, id, canonicalAgent(e.target.value))}
