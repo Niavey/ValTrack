@@ -8,12 +8,18 @@ import { collectAgentMaps } from "./agents.js";
 // Rien de nouveau à créer dans Supabase : tout est dans map_scores.
 //   - chaque map jouée peut indiquer qui l'a choisie : pick = "A" | "B" | "decider"
 //   - les bans sont rangés sur la première map : mapScores[0].veto = { bans: [{ side, map }] }
+//   - une decider jamais jouée (match plié avant) : mapScores[0].veto.decider = "Haven"
 export function getVeto(match) {
   const mapScores = match?.mapScores || [];
   const bans = (mapScores[0]?.veto?.bans || []).filter((b) => b?.map);
   const picks = mapScores
     .filter((m) => isPlayedMap(m) && m.map && m.pick)
-    .map((m) => ({ map: m.map, by: m.pick }));
+    .map((m) => ({ map: m.map, by: m.pick, played: true }));
+  // decider connue mais jamais jouée (ex. BO3 gagné 2-0) : veto.decider sur la 1re map
+  const unplayedDecider = mapScores[0]?.veto?.decider;
+  if (unplayedDecider && !picks.some((p) => p.by === "decider")) {
+    picks.push({ map: unplayedDecider, by: "decider", played: false });
+  }
   return { bans, picks, hasData: bans.length > 0 || picks.length > 0 };
 }
 

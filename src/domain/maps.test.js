@@ -20,7 +20,7 @@ describe("veto et stats de maps", () => {
   it("lit le veto d'un match", () => {
     const v = getVeto(vetoMatch);
     expect(v.bans).toHaveLength(2);
-    expect(v.picks).toEqual([{ map: "Ascent", by: "A" }, { map: "Lotus", by: "B" }, { map: "Haven", by: "decider" }]);
+    expect(v.picks).toEqual([{ map: "Ascent", by: "A", played: true }, { map: "Lotus", by: "B", played: true }, { map: "Haven", by: "decider", played: true }]);
     expect(getVeto(oldMatch).hasData).toBe(false);
   });
 
@@ -32,6 +32,19 @@ describe("veto et stats de maps", () => {
     expect(byMap.Bind).toMatchObject({ played: 1, bans: 1, banRate: 1 });
     expect(byMap.Haven).toMatchObject({ deciders: 1, deciderRate: 1, picks: 0 });
     expect(byMap.Ascent.playRate).toBeCloseTo(2 / 5);
+  });
+
+  it("decider non jouée (2-0) : compte en decider, pas en map jouée", () => {
+    const sweep = {
+      id: "m2", teamAId: "a", teamBId: "b",
+      mapScores: [
+        { a: 13, b: 5, map: "Ascent", pick: "A", veto: { bans: [{ side: "A", map: "Bind" }], decider: "Pearl" } },
+        { a: 13, b: 7, map: "Lotus", pick: "B" },
+      ],
+    };
+    expect(getVeto(sweep).picks.at(-1)).toEqual({ map: "Pearl", by: "decider", played: false });
+    const pearl = computeMapOverview([{ ...t, matches: [sweep] }]).maps.find((m) => m.map === "Pearl");
+    expect(pearl).toMatchObject({ played: 0, deciders: 1, deciderRate: 1 });
   });
 
   it("une map jamais jouée apparaît quand même si elle est dans la liste", () => {
